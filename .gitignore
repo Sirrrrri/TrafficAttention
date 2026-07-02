@@ -1,0 +1,49 @@
+# Model checkpoints
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.h5
+*.safetensors
+
+# Datasets
+*.pkl
+*.pickle
+*.npy
+*.npz
+*.pcap
+*.pcapng
+*.dat
+*.csv
+
+# Executables
+*.exe
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Virtual environments
+venv/
+.env/
