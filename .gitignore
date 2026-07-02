@@ -16,8 +16,6 @@
 *.dat
 *.csv
 
-# Executables
-*.exe
 
 # Python
 __pycache__/
