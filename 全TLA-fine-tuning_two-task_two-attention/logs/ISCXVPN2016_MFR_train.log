@@ -1,0 +1,248 @@
+✓ CUDA可用: 2 个GPU
+  - GPU 0: Tesla V100-PCIE-32GB
+  - GPU 1: Tesla V100-PCIE-32GB
+
+Loading pretrained model from /root/models/全TLA_pre-trained_model_two_tasks_with_two-attention/全TLA_pre-trained_model_two_tasks_with_two_attention.bin-125000
+✓ Model loaded successfully
+✓ Model moved to device: cuda:0
+================================================================================
+Finetuning with 4-Packet Format and Two-Level Attention
+================================================================================
+Input format:
+  src: [CLS] + packet1(80) + [SEP] + packet2(80) + [SEP] + packet3(80) + [SEP] + packet4(80)
+  seg: 所有位置都使用 segment 1
+       ([CLS], packet1, [SEP], packet2, [SEP], packet3, [SEP], packet4 全部标记为1)
+Input length: 1 + 80 + 1 + 80 + 1 + 80 + 1 + 80 = 324 tokens (truncated to 320)
+Sequence length: 320
+Batch size: 32
+Training instances: 10816
+Number of labels: 7
+Data source: .pt files from /root/datasets_new/fine-tuning数据集/
+
+================================================================================
+Two-Level Attention Mechanism Configuration
+================================================================================
+Packet size: 80 tokens (Header: 40, Payload: 40)
+Number of attention heads: 8
+
+【Level 1: Packet-Level Attention (4 layers)】
+  Status: ✓ Enabled
+  Purpose: 对每个数据包内部的header-payload关系建模
+  3 Sub-Attention Mechanisms (Serial Processing):
+    (1) SubAttention1 (h-h): Header内部全局注意力 (40 tokens)
+    (2) SubAttention2 (h-p): Payload作q，Header作k&v的交叉注意力（使用SubAttention1输出）
+    (3) SubAttention3 (p-p): Payload内部窗口注意力 (window=20)（使用SubAttention2输出）
+  Layers: 4 layers (each packet processed independently)
+
+【Pooling Layer】
+  Purpose: 减少序列长度，为流级注意力做准备
+  Method: Mean pooling on payload (40 tokens -> 4 tokens per packet)
+
+【Level 2: Flow-Level Attention (8 layers)】
+  Status: ✓ Enabled
+  Purpose: 对4个数据包之间的跨包依赖关系建模
+  Input: 包级注意力的输出（池化后）
+  Mechanisms:
+    (1) 数据重组: 拼接4个数据包的header和池化后的payload
+    (2) 滑动窗口注意力（包括自己和相邻包）:
+        - 包1: 窗口=[0,1]，attend到包1和包2
+        - 包2: 窗口=[0,1,2]，attend到包1、包2和包3
+        - 包3: 窗口=[1,2,3]，attend到包2、包3和包4
+        - 包4: 窗口=[2,3]，attend到包3和包4
+    (3) h查h: Header的tokens作q，窗口内包的header作k&v
+    (4) p查p: Payload的tokens作q，窗口内包的payload作k&v
+  Layers: 8 layers (stacked flow attention)
+================================================================================
+2 GPUs are available. Let's use them.
+Early stopping enabled: patience=6, min_delta=0.001
+Start training.
+  0%|          | 0/50 [00:00<?, ?it/s]/root/anaconda3/envs/Mine/lib/python3.8/site-packages/torch/nn/parallel/_functions.py:68: UserWarning: Was asked to gather along dimension 0, but all input tensors were scalars; will instead unsqueeze and return a vector.
+  warnings.warn('Was asked to gather along dimension 0, but all '
+Epoch id: 1, Training steps: 100, Avg loss: 1.9637
+Epoch id: 1, Training steps: 200, Avg loss: 1.5775
+Epoch id: 1, Training steps: 300, Avg loss: 1.5111
+
+================================================================================
+Epoch 1 - Validation
+================================================================================
+Loss: 1.5075, Acc. (Correct/Total): 0.3950 (534/1352) 
+Macro-Precision: 0.0564, Macro-Recall: 0.1429, Macro-F1: 0.0809
+Correct predictions per class:
+Label 0: 0/167 (correct/total)
+Label 1: 0/418 (correct/total)
+Label 2: 0/110 (correct/total)
+Label 3: 0/27 (correct/total)
+Label 4: 0/40 (correct/total)
+Label 5: 534/534 (correct/total)
+Label 6: 0/56 (correct/total)
+✓ Epoch 1: Validation improved! Loss: 1.5075, Acc: 0.3950 (Best: 0.3950). Model saved.
+================================================================================
+
+  2%|▏         | 1/50 [03:44<3:02:56, 224.02s/it]Epoch id: 2, Training steps: 100, Avg loss: 2.0858
+Epoch id: 2, Training steps: 200, Avg loss: 1.4895
+Epoch id: 2, Training steps: 300, Avg loss: 1.5020
+
+================================================================================
+Epoch 2 - Validation
+================================================================================
+Loss: 1.5074, Acc. (Correct/Total): 0.3950 (534/1352) 
+Macro-Precision: 0.0564, Macro-Recall: 0.1429, Macro-F1: 0.0809
+Correct predictions per class:
+Label 0: 0/167 (correct/total)
+Label 1: 0/418 (correct/total)
+Label 2: 0/110 (correct/total)
+Label 3: 0/27 (correct/total)
+Label 4: 0/40 (correct/total)
+Label 5: 534/534 (correct/total)
+Label 6: 0/56 (correct/total)
+✗ Epoch 2: Validation did not improve. Loss: 1.5074, Acc: 0.3950 (Best: 0.3950). Patience: 1/6
+================================================================================
+
+  4%|▍         | 2/50 [07:28<2:59:12, 224.02s/it]Epoch id: 3, Training steps: 100, Avg loss: 2.0842
+Epoch id: 3, Training steps: 200, Avg loss: 1.4898
+Epoch id: 3, Training steps: 300, Avg loss: 1.5007
+
+================================================================================
+Epoch 3 - Validation
+================================================================================
+Loss: 1.5074, Acc. (Correct/Total): 0.3950 (534/1352) 
+Macro-Precision: 0.0564, Macro-Recall: 0.1429, Macro-F1: 0.0809
+Correct predictions per class:
+Label 0: 0/167 (correct/total)
+Label 1: 0/418 (correct/total)
+Label 2: 0/110 (correct/total)
+Label 3: 0/27 (correct/total)
+Label 4: 0/40 (correct/total)
+Label 5: 534/534 (correct/total)
+Label 6: 0/56 (correct/total)
+✗ Epoch 3: Validation did not improve. Loss: 1.5074, Acc: 0.3950 (Best: 0.3950). Patience: 2/6
+================================================================================
+
+  6%|▌         | 3/50 [11:18<2:57:44, 226.91s/it]Epoch id: 4, Training steps: 100, Avg loss: 2.0835
+Epoch id: 4, Training steps: 200, Avg loss: 1.4895
+Epoch id: 4, Training steps: 300, Avg loss: 1.5029
+
+================================================================================
+Epoch 4 - Validation
+================================================================================
+Loss: 1.5079, Acc. (Correct/Total): 0.3950 (534/1352) 
+Macro-Precision: 0.0564, Macro-Recall: 0.1429, Macro-F1: 0.0809
+Correct predictions per class:
+Label 0: 0/167 (correct/total)
+Label 1: 0/418 (correct/total)
+Label 2: 0/110 (correct/total)
+Label 3: 0/27 (correct/total)
+Label 4: 0/40 (correct/total)
+Label 5: 534/534 (correct/total)
+Label 6: 0/56 (correct/total)
+✗ Epoch 4: Validation did not improve. Loss: 1.5079, Acc: 0.3950 (Best: 0.3950). Patience: 3/6
+================================================================================
+
+  8%|▊         | 4/50 [15:02<2:53:06, 225.80s/it]Epoch id: 5, Training steps: 100, Avg loss: 2.0839
+Epoch id: 5, Training steps: 200, Avg loss: 1.4901
+Epoch id: 5, Training steps: 300, Avg loss: 1.5043
+
+================================================================================
+Epoch 5 - Validation
+================================================================================
+Loss: 1.5083, Acc. (Correct/Total): 0.3950 (534/1352) 
+Macro-Precision: 0.0564, Macro-Recall: 0.1429, Macro-F1: 0.0809
+Correct predictions per class:
+Label 0: 0/167 (correct/total)
+Label 1: 0/418 (correct/total)
+Label 2: 0/110 (correct/total)
+Label 3: 0/27 (correct/total)
+Label 4: 0/40 (correct/total)
+Label 5: 534/534 (correct/total)
+Label 6: 0/56 (correct/total)
+✗ Epoch 5: Validation did not improve. Loss: 1.5083, Acc: 0.3950 (Best: 0.3950). Patience: 4/6
+================================================================================
+
+ 10%|█         | 5/50 [18:52<2:50:32, 227.39s/it]Epoch id: 6, Training steps: 100, Avg loss: 2.0849
+Epoch id: 6, Training steps: 200, Avg loss: 1.4920
+Epoch id: 6, Training steps: 300, Avg loss: 1.5045
+
+================================================================================
+Epoch 6 - Validation
+================================================================================
+Loss: 1.5081, Acc. (Correct/Total): 0.3950 (534/1352) 
+Macro-Precision: 0.0564, Macro-Recall: 0.1429, Macro-F1: 0.0809
+Correct predictions per class:
+Label 0: 0/167 (correct/total)
+Label 1: 0/418 (correct/total)
+Label 2: 0/110 (correct/total)
+Label 3: 0/27 (correct/total)
+Label 4: 0/40 (correct/total)
+Label 5: 534/534 (correct/total)
+Label 6: 0/56 (correct/total)
+✗ Epoch 6: Validation did not improve. Loss: 1.5081, Acc: 0.3950 (Best: 0.3950). Patience: 5/6
+================================================================================
+
+ 12%|█▏        | 6/50 [22:41<2:47:10, 227.96s/it]Epoch id: 7, Training steps: 100, Avg loss: 2.0852
+Epoch id: 7, Training steps: 200, Avg loss: 1.4902
+Epoch id: 7, Training steps: 300, Avg loss: 1.5034
+
+================================================================================
+Epoch 7 - Validation
+================================================================================
+Loss: 1.5080, Acc. (Correct/Total): 0.3950 (534/1352) 
+Macro-Precision: 0.0564, Macro-Recall: 0.1429, Macro-F1: 0.0809
+Correct predictions per class:
+Label 0: 0/167 (correct/total)
+Label 1: 0/418 (correct/total)
+Label 2: 0/110 (correct/total)
+Label 3: 0/27 (correct/total)
+Label 4: 0/40 (correct/total)
+Label 5: 534/534 (correct/total)
+Label 6: 0/56 (correct/total)
+✗ Epoch 7: Validation did not improve. Loss: 1.5080, Acc: 0.3950 (Best: 0.3950). Patience: 6/6
+
+Early stopping triggered! No improvement for 6 consecutive epochs.
+Best validation accuracy: 0.3950
+Training stopped at epoch 7/50
+ 12%|█▏        | 6/50 [26:20<3:13:12, 263.48s/it]
+
+================================================================================
+Test set evaluation
+================================================================================
+Confusion matrix:
+tensor([[  0,   0,   0,   0,   0,   0,   0],
+        [  0,   0,   0,   0,   0,   0,   0],
+        [  0,   0,   0,   0,   0,   0,   0],
+        [  0,   0,   0,   0,   0,   0,   0],
+        [  0,   0,   0,   0,   0,   0,   0],
+        [194, 409,  94,  37,  33, 546,  39],
+        [  0,   0,   0,   0,   0,   0,   0]])
+Confusion matrix saved to: /root/models/全TLA_fine-tuning_two-task_two-attention/ISCXVPN2016_MFR/confusion_matrix.txt
+Report precision, recall, and f1:
+Label 0: 0.000, 0.000, 0.000
+Label 1: 0.000, 0.000, 0.000
+Label 2: 0.000, 0.000, 0.000
+Label 3: 0.000, 0.000, 0.000
+Label 4: 0.000, 0.000, 0.000
+Label 5: 0.404, 1.000, 0.575
+Label 6: 0.000, 0.000, 0.000
+Loss: 1.4879, Acc. (Correct/Total): 0.4038 (546/1352) 
+Macro-Precision: 0.0577, Macro-Recall: 0.1429, Macro-F1: 0.0822
+Correct predictions per class:
+Label 0: 0/194 (correct/total)
+Label 1: 0/409 (correct/total)
+Label 2: 0/94 (correct/total)
+Label 3: 0/37 (correct/total)
+Label 4: 0/33 (correct/total)
+Label 5: 546/546 (correct/total)
+Label 6: 0/39 (correct/total)
+
+✓ Encoder attention saved to: /root/models/全TLA_fine-tuning_two-task_two-attention/ISCXVPN2016_MFR/attention_encoder.pt
+  Encoder layers: 0
+⚠ No flow attention data to save
+
+================================================================================
+Final Test Results:
+  Loss: 1.4879
+  Accuracy: 0.4038
+  Macro-Precision: 0.0577
+  Macro-Recall: 0.1429
+  Macro-F1: 0.0822
+================================================================================
+
