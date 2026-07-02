@@ -806,8 +806,8 @@ if __name__ == '__main__':
     except ImportError:
         print("⚠️  config.py未找到，使用默认配置")
         # DATASETS_ROOT可以选择两种模式，见mode_descriptions
-        DATASETS_ROOT = "/root/datasets_new/original_pcap_datasets-for_pre-training/"
-        DATASETS = ["NonVPN", "NonTor", "BenignTraffic", "CICIoT2022"]
+        DATASETS_ROOT = "/root/datasets/original_datasets/original_pretraining_datasets/"
+        DATASETS = ["NonVPN", "browser", "IDS"]
         PROCESSING_MODE = None  # 如果未定义，使用下面的默认值
     
     # 处理模式配置
@@ -818,7 +818,7 @@ if __name__ == '__main__':
         PROCESSING_MODE = 'auto'  # 默认使用模式2（适合当前场景）
     
     # 输出目录（拆分后的单流pcap文件）
-    OUTPUT_ROOT = "/root/datasets_new/单流Pcap数据集_预训练_随机化/"
+    OUTPUT_ROOT = "/root/datasets/单流Pcap数据集_预训练_随机化/"
     
     # 流拆分参数
     NUM_WORKERS = 6        # 并行进程数（手动设置为6个进程）

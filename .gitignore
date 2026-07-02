@@ -41,9 +41,6 @@ build/
 .DS_Store
 Thumbs.db
 
-# Logs
-*.log
-
 # Virtual environments
 venv/
 .env/
