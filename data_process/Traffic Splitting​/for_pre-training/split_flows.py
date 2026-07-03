@@ -25,6 +25,99 @@ import socket
 import dpkt
 
 
+def get_ip_offset(datalink):
+    """
+    根据pcap文件的datalink类型返回IP头在packet_data中的字节偏移
+
+    常见datalink类型:
+        1   (DLT_EN10MB)    - 以太网帧，IP头偏移14字节
+        101 (DLT_RAW)       - 裸IP包，IP头偏移0字节
+        12  (DLT_RAW 旧版)  - 裸IP包，IP头偏移0字节
+        113 (DLT_LINUX_SLL) - Linux Cooked Capture，IP头偏移16字节
+        276 (DLT_LINUX_SLL2)- Linux Cooked Capture v2，IP头偏移20字节
+
+    返回:
+        int: IP头的字节偏移量，未知类型返回None
+    """
+    offset_map = {
+        1: 14,      # Ethernet
+        101: 0,     # Raw IP
+        12: 0,      # Raw IP (旧版DLT值)
+        113: 16,    # Linux SLL
+        276: 20,    # Linux SLL2
+    }
+    return offset_map.get(datalink, None)
+
+
+def open_pcap_reader(file_handle):
+    """
+    尝试用 dpkt 打开 pcap 或 pcapng 文件
+
+    参数:
+        file_handle: 已打开的文件对象（rb模式）
+
+    返回:
+        (reader, datalink) 元组，reader 是 dpkt 的 Reader 对象，datalink 是链路层类型
+        失败返回 (None, None)
+    """
+    # 先尝试标准 pcap
+    try:
+        file_handle.seek(0)
+        reader = dpkt.pcap.Reader(file_handle)
+        datalink = reader.datalink()
+        return reader, datalink
+    except (ValueError, Exception):
+        pass
+
+    # 再尝试 pcapng
+    try:
+        file_handle.seek(0)
+        reader = dpkt.pcapng.Reader(file_handle)
+        datalink = reader.datalink()
+        return reader, datalink
+    except (ValueError, AttributeError, Exception):
+        pass
+
+    return None, None
+
+
+def extract_ip_from_packet(packet_data, datalink):
+    """
+    根据datalink类型从packet_data中提取IP层对象
+
+    参数:
+        packet_data: 原始包数据
+        datalink: pcap文件的datalink类型
+
+    返回:
+        (ip_obj, ip_offset) 或 (None, None) 如果解析失败
+    """
+    ip_offset = get_ip_offset(datalink)
+    if ip_offset is None:
+        return None, None
+
+    if len(packet_data) < ip_offset + 20:  # IP头至少20字节
+        return None, None
+
+    try:
+        if datalink == 1:  # 以太网
+            eth = dpkt.ethernet.Ethernet(packet_data)
+            if eth.type == dpkt.ethernet.ETH_TYPE_IP:
+                return eth.ip, ip_offset
+            elif eth.type == dpkt.ethernet.ETH_TYPE_IP6:
+                return None, None  # 跳过IPv6
+            else:
+                return None, None
+        else:
+            # Raw IP 或 Linux SLL: 从偏移位置直接解析IP
+            ip = dpkt.ip.IP(packet_data[ip_offset:])
+            if ip.v != 4:
+                return None, None
+            return ip, ip_offset
+    except Exception:
+        return None, None
+
+
 def check_dpkt_available():
     """
     检查 dpkt 是否已安装
@@ -68,12 +161,19 @@ def anonymize_flow_pcap(pcap_path, debug_log=None):
     try:
         # 打开输入pcap文件
         with open(pcap_path, 'rb') as f_in:
-            # 读取pcap文件头
-            try:
-                pcap_reader = dpkt.pcap.Reader(f_in)
-            except Exception as e:
-                # pcap文件格式错误
-                error_msg = f"Failed to read pcap header: {str(e)}"
+            # 读取pcap/pcapng文件头
+            pcap_reader, datalink = open_pcap_reader(f_in)
+            if pcap_reader is None:
+                error_msg = "Failed to read pcap/pcapng header"
+                if debug_log:
+                    with open(debug_log, 'a') as f:
+                        f.write(f"  ERROR [{os.path.basename(pcap_path)}]: {error_msg}\n")
+                return False
+
+            # 根据datalink类型确定IP头偏移
+            ip_start = get_ip_offset(datalink)
+            if ip_start is None:
+                error_msg = f"Unsupported datalink type: {datalink}"
                 if debug_log:
                     with open(debug_log, 'a') as f:
                         f.write(f"  ERROR [{os.path.basename(pcap_path)}]: {error_msg}\n")
@@ -84,8 +184,6 @@ def anonymize_flow_pcap(pcap_path, debug_log=None):
             first_timestamp = None
             first_src_ip = None
             first_dst_ip = None
-            has_ether = True
-            ip_start = 0
 
             try:
                 first_timestamp, first_packet_data = next(pcap_reader)
@@ -98,27 +196,9 @@ def anonymize_flow_pcap(pcap_path, debug_log=None):
 
             # 解析第一个包，提取IP头信息
             try:
-                # 先尝试解析为以太网帧
-                try:
-                    eth = dpkt.ethernet.Ethernet(first_packet_data)
-                    if eth.type == dpkt.ethernet.ETH_TYPE_IP:
-                        # 有以太网头且是IPv4
-                        ip = eth.ip
-                        has_ether = True
-                        ip_start = 14
-                    else:
-                        # 有以太网头但不是IPv4，尝试直接解析IP
-                        has_ether = False
-                        ip = dpkt.ip.IP(first_packet_data)
-                        ip_start = 0
-                except:
-                    # 解析以太网帧失败，尝试直接解析IP
-                    has_ether = False
-                    ip = dpkt.ip.IP(first_packet_data)
-                    ip_start = 0
-
-                if ip.v != 4:  # 不是IPv4
-                    error_msg = f"Not IPv4 (version={ip.v})"
+                ip, _ = extract_ip_from_packet(first_packet_data, datalink)
+                if ip is None:
+                    error_msg = "Failed to extract IP from first packet"
                     if debug_log:
                         with open(debug_log, 'a') as f:
                             f.write(f"  ERROR [{os.path.basename(pcap_path)}]: {error_msg}\n")
@@ -136,13 +216,6 @@ def anonymize_flow_pcap(pcap_path, debug_log=None):
                         f.write(f"  ERROR [{os.path.basename(pcap_path)}]: {error_msg}\n")
                 return False
 
-            if first_src_ip is None or first_dst_ip is None:
-                error_msg = "Failed to extract IP addresses from first packet"
-                if debug_log:
-                    with open(debug_log, 'a') as f:
-                        f.write(f"  ERROR [{os.path.basename(pcap_path)}]: {error_msg}\n")
-                return False
-
             # 为这条流生成随机IP地址对（所有包使用相同的IP对）
             random_src_ip_bytes = socket.inet_aton(random_ipv4())
             random_dst_ip_bytes = socket.inet_aton(random_ipv4())
@@ -151,12 +224,12 @@ def anonymize_flow_pcap(pcap_path, debug_log=None):
             temp_fd, temp_path = tempfile.mkstemp(suffix='.pcap', dir=os.path.dirname(pcap_path))
             temp_file = os.fdopen(temp_fd, 'wb')
 
-            # 创建pcap写入器
-            pcap_writer = dpkt.pcap.Writer(temp_file)
+            # 创建pcap写入器（保持原始datalink类型）
+            pcap_writer = dpkt.pcap.Writer(temp_file, linktype=datalink)
 
             # 处理第一个包
             modified_data = modify_packet_binary(
-                first_packet_data, has_ether, ip_start, first_src_ip_bytes, first_dst_ip_bytes,
+                first_packet_data, ip_start, first_src_ip_bytes, first_dst_ip_bytes,
                 random_src_ip_bytes, random_dst_ip_bytes
             )
             if modified_data:
@@ -169,7 +242,7 @@ def anonymize_flow_pcap(pcap_path, debug_log=None):
             for timestamp, packet_data in pcap_reader:
                 try:
                     modified_data = modify_packet_binary(
-                        packet_data, has_ether, ip_start, first_src_ip_bytes, first_dst_ip_bytes,
+                        packet_data, ip_start, first_src_ip_bytes, first_dst_ip_bytes,
                         random_src_ip_bytes, random_dst_ip_bytes
                     )
                     if modified_data:
@@ -225,15 +298,14 @@ def anonymize_flow_pcap(pcap_path, debug_log=None):
         return False
 
 
-def modify_packet_binary(packet_data, has_ether, ip_start, first_src_ip_bytes, first_dst_ip_bytes,
+def modify_packet_binary(packet_data, ip_start, first_src_ip_bytes, first_dst_ip_bytes,
                          random_src_ip_bytes, random_dst_ip_bytes):
     """
     直接修改包的二进制数据：随机化IP地址和清零端口
 
     参数:
         packet_data: 包的原始二进制数据
-        has_ether: 是否有以太网头
-        ip_start: IP头起始位置（已预先计算）
+        ip_start: IP头起始位置（根据datalink类型预先计算）
         first_src_ip_bytes: 第一个包的源IP（字节格式）
         first_dst_ip_bytes: 第一个包的目标IP（字节格式）
         random_src_ip_bytes: 随机源IP（字节格式）
@@ -335,29 +407,25 @@ def split_pcap_by_flow(pcap_path, output_dir):
         flows = {}  # key: flow_key, value: list of (timestamp, packet_data)
 
         with open(pcap_path, 'rb') as f_in:
-            try:
-                pcap_reader = dpkt.pcap.Reader(f_in)
-            except Exception as e:
+            # 尝试打开 pcap 或 pcapng 文件
+            pcap_reader, datalink = open_pcap_reader(f_in)
+            if pcap_reader is None:
                 with open(debug_log, 'a') as f:
-                    f.write(f"Failed to read pcap: {pcap_path}: {str(e)}\n")
+                    f.write(f"Failed to read pcap/pcapng: {pcap_path}\n")
+                return 0
+
+            # 获取datalink类型，确定IP头偏移
+            ip_offset = get_ip_offset(datalink)
+            if ip_offset is None:
+                with open(debug_log, 'a') as f:
+                    f.write(f"Unsupported datalink type {datalink}: {pcap_path}\n")
                 return 0
 
             for timestamp, packet_data in pcap_reader:
                 try:
-                    # 尝试解析为以太网帧
-                    try:
-                        eth = dpkt.ethernet.Ethernet(packet_data)
-                        if eth.type != dpkt.ethernet.ETH_TYPE_IP:
-                            continue
-                        ip = eth.ip
-                    except:
-                        # 尝试直接解析为IP包
-                        try:
-                            ip = dpkt.ip.IP(packet_data)
-                        except:
-                            continue
-
-                    if ip.v != 4:
+                    # 根据datalink类型提取IP层
+                    ip, _ = extract_ip_from_packet(packet_data, datalink)
+                    if ip is None:
                         continue
 
                     src_ip = ip.src
@@ -407,9 +475,9 @@ def split_pcap_by_flow(pcap_path, output_dir):
             flow_path = os.path.join(output_dir, flow_filename)
 
             try:
-                # 写入流pcap文件
+                # 写入流pcap文件（保持与原始pcap相同的datalink类型）
                 with open(flow_path, 'wb') as f_out:
-                    pcap_writer = dpkt.pcap.Writer(f_out)
+                    pcap_writer = dpkt.pcap.Writer(f_out, linktype=datalink)
                     for ts, pkt_data in packets:
                         pcap_writer.writepkt(pkt_data, ts)
                     pcap_writer.close()
