@@ -1,0 +1,1166 @@
+
+Split Summary for aim_chat_3a:
+  Total flows: 40
+  Successfully processed: 40
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for aim_chat_3b:
+  Total flows: 320
+  Successfully processed: 320
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for email2a:
+  Total flows: 250
+  Successfully processed: 250
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for email2b:
+  Total flows: 218
+  Successfully processed: 218
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for facebook_chat_4a:
+  Total flows: 61
+  Successfully processed: 61
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for facebook_chat_4b:
+  Total flows: 314
+  Successfully processed: 314
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for facebook_audio1a:
+  Total flows: 155
+  Successfully processed: 155
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for email1a:
+  Total flows: 2383
+  Successfully processed: 2383
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for email1b:
+  Total flows: 2392
+  Successfully processed: 2392
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for facebook_audio2a:
+  Total flows: 250
+  Successfully processed: 250
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for facebook_video1a:
+  Total flows: 162
+  Successfully processed: 162
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for ftps_up_2a:
+  Total flows: 133
+  Successfully processed: 133
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for hangout_chat_4b:
+  Total flows: 338
+  Successfully processed: 338
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for ftps_up_2b:
+  Total flows: 64
+  Successfully processed: 64
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for hangouts_chat_4a:
+  Total flows: 98
+  Successfully processed: 98
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for hangouts_audio1a:
+  Total flows: 888
+  Successfully processed: 888
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for icq_chat_3a:
+  Total flows: 59
+  Successfully processed: 59
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for hangouts_audio2a:
+  Total flows: 871
+  Successfully processed: 871
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for icq_chat_3b:
+  Total flows: 301
+  Successfully processed: 301
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for facebook_video2a:
+  Total flows: 208
+  Successfully processed: 208
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for netflix2:
+  Total flows: 99
+  Successfully processed: 99
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for netflix1:
+  Total flows: 127
+  Successfully processed: 127
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for scpDown1:
+  Total flows: 16
+  Successfully processed: 16
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for scpDown2:
+  Total flows: 11
+  Successfully processed: 11
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for netflix3:
+  Total flows: 59
+  Successfully processed: 59
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for scpDown4:
+  Total flows: 15
+  Successfully processed: 15
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for scpDown3:
+  Total flows: 16
+  Successfully processed: 16
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for netflix4:
+  Total flows: 95
+  Successfully processed: 95
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for scpDown5:
+  Total flows: 16
+  Successfully processed: 16
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for scpDown6:
+  Total flows: 18
+  Successfully processed: 18
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for scpUp3:
+  Total flows: 18
+  Successfully processed: 18
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for scpUp5:
+  Total flows: 15
+  Successfully processed: 15
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for scpUp1:
+  Total flows: 27
+  Successfully processed: 27
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for sftp_down_3a:
+  Total flows: 14
+  Successfully processed: 14
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for scpUp6:
+  Total flows: 18
+  Successfully processed: 18
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for sftp_down_3b:
+  Total flows: 33
+  Successfully processed: 33
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for sftp_up_2a:
+  Total flows: 28
+  Successfully processed: 28
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for sftpDown1:
+  Total flows: 29
+  Successfully processed: 29
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for sftpDown2:
+  Total flows: 33
+  Successfully processed: 33
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for sftp_up_2b:
+  Total flows: 32
+  Successfully processed: 32
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for scpUp2:
+  Total flows: 25
+  Successfully processed: 25
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for skype_audio1a:
+  Total flows: 97
+  Successfully processed: 97
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for sftpUp1:
+  Total flows: 19
+  Successfully processed: 19
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for skype_audio2a:
+  Total flows: 35
+  Successfully processed: 35
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for skype_file1:
+  Total flows: 41
+  Successfully processed: 41
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for skype_file2:
+  Total flows: 55
+  Successfully processed: 55
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for hangouts_video2a:
+  Total flows: 1388
+  Successfully processed: 1388
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for skype_file3:
+  Total flows: 21
+  Successfully processed: 21
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for skype_chat1a:
+  Total flows: 2835
+  Successfully processed: 2835
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for skype_chat1b:
+  Total flows: 2838
+  Successfully processed: 2838
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for spotify2:
+  Total flows: 34
+  Successfully processed: 34
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for spotify3:
+  Total flows: 53
+  Successfully processed: 53
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for spotify1:
+  Total flows: 116
+  Successfully processed: 116
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for spotify4:
+  Total flows: 98
+  Successfully processed: 98
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for vimeo2:
+  Total flows: 68
+  Successfully processed: 68
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for skype_video1a:
+  Total flows: 47
+  Successfully processed: 47
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for vimeo4:
+  Total flows: 125
+  Successfully processed: 125
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for vimeo3:
+  Total flows: 126
+  Successfully processed: 126
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for vimeo1:
+  Total flows: 133
+  Successfully processed: 133
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for youtube1:
+  Total flows: 162
+  Successfully processed: 162
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for skype_video2a:
+  Total flows: 48
+  Successfully processed: 48
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for youtube3:
+  Total flows: 81
+  Successfully processed: 81
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for youtube2:
+  Total flows: 59
+  Successfully processed: 59
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for youtube4:
+  Total flows: 255
+  Successfully processed: 255
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for youtube6:
+  Total flows: 46
+  Successfully processed: 46
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for youtubeHTML5_1:
+  Total flows: 199
+  Successfully processed: 199
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for voipbuster_4a:
+  Total flows: 204
+  Successfully processed: 204
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for voipbuster_4b:
+  Total flows: 1574
+  Successfully processed: 1574
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for youtube5:
+  Total flows: 123
+  Successfully processed: 123
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for ftps_down_1b:
+  Total flows: 68
+  Successfully processed: 68
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for ftps_down_1a:
+  Total flows: 584
+  Successfully processed: 584
+  Failed: 0
+  Success rate: 100.00%
+
+No flows found in: /root/datasets/original_datasets/original_pretraining_datasets/browser/samsung_uc_1000.pcap
+No flows found in: /root/datasets/original_datasets/original_pretraining_datasets/browser/samsung_internet_1000.pcap
+
+Split Summary for samsung_firefox_1000:
+  Total flows: 7
+  Successfully processed: 7
+  Failed: 0
+  Success rate: 100.00%
+
+No flows found in: /root/datasets/original_datasets/original_pretraining_datasets/browser/samsung_chrome_1000.pcap
+Failed to read pcap: /root/datasets/original_datasets/original_pretraining_datasets/IDS/Monday-WorkingHours.pcap: invalid tcpdump header
+
+Split Summary for aim_chat_3a:
+  Total flows: 40
+  Successfully processed: 40
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for email2a:
+  Total flows: 250
+  Successfully processed: 250
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for aim_chat_3b:
+  Total flows: 320
+  Successfully processed: 320
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for email2b:
+  Total flows: 218
+  Successfully processed: 218
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for facebook_chat_4a:
+  Total flows: 61
+  Successfully processed: 61
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for facebook_chat_4b:
+  Total flows: 314
+  Successfully processed: 314
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for facebook_audio1a:
+  Total flows: 155
+  Successfully processed: 155
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for facebook_audio2a:
+  Total flows: 250
+  Successfully processed: 250
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for email1a:
+  Total flows: 2383
+  Successfully processed: 2383
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for email1b:
+  Total flows: 2392
+  Successfully processed: 2392
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for facebook_video1a:
+  Total flows: 162
+  Successfully processed: 162
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for hangout_chat_4b:
+  Total flows: 338
+  Successfully processed: 338
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for ftps_up_2a:
+  Total flows: 133
+  Successfully processed: 133
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for ftps_up_2b:
+  Total flows: 64
+  Successfully processed: 64
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for hangouts_chat_4a:
+  Total flows: 98
+  Successfully processed: 98
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for facebook_video2a:
+  Total flows: 208
+  Successfully processed: 208
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for icq_chat_3a:
+  Total flows: 59
+  Successfully processed: 59
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for icq_chat_3b:
+  Total flows: 301
+  Successfully processed: 301
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for aim_chat_3a:
+  Total flows: 40
+  Successfully processed: 40
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for email2a:
+  Total flows: 250
+  Successfully processed: 250
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for aim_chat_3b:
+  Total flows: 320
+  Successfully processed: 320
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for email2b:
+  Total flows: 218
+  Successfully processed: 218
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for facebook_chat_4a:
+  Total flows: 61
+  Successfully processed: 61
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for facebook_chat_4b:
+  Total flows: 314
+  Successfully processed: 314
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for facebook_audio1a:
+  Total flows: 155
+  Successfully processed: 155
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for email1a:
+  Total flows: 2383
+  Successfully processed: 2383
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for email1b:
+  Total flows: 2392
+  Successfully processed: 2392
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for facebook_audio2a:
+  Total flows: 250
+  Successfully processed: 250
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for ftps_up_2a:
+  Total flows: 133
+  Successfully processed: 133
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for facebook_video1a:
+  Total flows: 162
+  Successfully processed: 162
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for hangout_chat_4b:
+  Total flows: 338
+  Successfully processed: 338
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for ftps_up_2b:
+  Total flows: 64
+  Successfully processed: 64
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for hangouts_chat_4a:
+  Total flows: 98
+  Successfully processed: 98
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for hangouts_audio1a:
+  Total flows: 888
+  Successfully processed: 888
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for icq_chat_3a:
+  Total flows: 59
+  Successfully processed: 59
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for hangouts_audio2a:
+  Total flows: 871
+  Successfully processed: 871
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for icq_chat_3b:
+  Total flows: 301
+  Successfully processed: 301
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for facebook_video2a:
+  Total flows: 208
+  Successfully processed: 208
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for netflix1:
+  Total flows: 127
+  Successfully processed: 127
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for netflix2:
+  Total flows: 99
+  Successfully processed: 99
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for scpDown1:
+  Total flows: 16
+  Successfully processed: 16
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for scpDown2:
+  Total flows: 11
+  Successfully processed: 11
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for scpDown3:
+  Total flows: 16
+  Successfully processed: 16
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for scpDown4:
+  Total flows: 15
+  Successfully processed: 15
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for netflix4:
+  Total flows: 95
+  Successfully processed: 95
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for netflix3:
+  Total flows: 59
+  Successfully processed: 59
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for scpDown5:
+  Total flows: 16
+  Successfully processed: 16
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for scpUp1:
+  Total flows: 27
+  Successfully processed: 27
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for scpUp3:
+  Total flows: 18
+  Successfully processed: 18
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for scpUp5:
+  Total flows: 15
+  Successfully processed: 15
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for scpDown6:
+  Total flows: 18
+  Successfully processed: 18
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for sftp_down_3a:
+  Total flows: 14
+  Successfully processed: 14
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for scpUp6:
+  Total flows: 18
+  Successfully processed: 18
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for sftp_down_3b:
+  Total flows: 33
+  Successfully processed: 33
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for sftp_up_2a:
+  Total flows: 28
+  Successfully processed: 28
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for scpUp2:
+  Total flows: 25
+  Successfully processed: 25
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for sftpDown1:
+  Total flows: 29
+  Successfully processed: 29
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for sftpDown2:
+  Total flows: 33
+  Successfully processed: 33
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for sftp_up_2b:
+  Total flows: 32
+  Successfully processed: 32
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for skype_audio1a:
+  Total flows: 97
+  Successfully processed: 97
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for sftpUp1:
+  Total flows: 19
+  Successfully processed: 19
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for skype_audio2a:
+  Total flows: 35
+  Successfully processed: 35
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for hangouts_video2a:
+  Total flows: 1388
+  Successfully processed: 1388
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for skype_file1:
+  Total flows: 41
+  Successfully processed: 41
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for skype_file2:
+  Total flows: 55
+  Successfully processed: 55
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for skype_chat1a:
+  Total flows: 2835
+  Successfully processed: 2835
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for skype_file3:
+  Total flows: 21
+  Successfully processed: 21
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for skype_chat1b:
+  Total flows: 2838
+  Successfully processed: 2838
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for spotify2:
+  Total flows: 34
+  Successfully processed: 34
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for spotify3:
+  Total flows: 53
+  Successfully processed: 53
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for spotify1:
+  Total flows: 116
+  Successfully processed: 116
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for spotify4:
+  Total flows: 98
+  Successfully processed: 98
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for vimeo2:
+  Total flows: 68
+  Successfully processed: 68
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for skype_video1a:
+  Total flows: 47
+  Successfully processed: 47
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for vimeo4:
+  Total flows: 125
+  Successfully processed: 125
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for vimeo3:
+  Total flows: 126
+  Successfully processed: 126
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for vimeo1:
+  Total flows: 133
+  Successfully processed: 133
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for youtube1:
+  Total flows: 162
+  Successfully processed: 162
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for skype_video2a:
+  Total flows: 48
+  Successfully processed: 48
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for youtube2:
+  Total flows: 59
+  Successfully processed: 59
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for youtube3:
+  Total flows: 81
+  Successfully processed: 81
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for youtube4:
+  Total flows: 255
+  Successfully processed: 255
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for youtube6:
+  Total flows: 46
+  Successfully processed: 46
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for voipbuster_4a:
+  Total flows: 204
+  Successfully processed: 204
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for voipbuster_4b:
+  Total flows: 1574
+  Successfully processed: 1574
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for youtubeHTML5_1:
+  Total flows: 199
+  Successfully processed: 199
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for youtube5:
+  Total flows: 123
+  Successfully processed: 123
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for ftps_down_1b:
+  Total flows: 68
+  Successfully processed: 68
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for ftps_down_1a:
+  Total flows: 584
+  Successfully processed: 584
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for samsung_internet_1000:
+  Total flows: 27553
+  Successfully processed: 27553
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for samsung_uc_1000:
+  Total flows: 38836
+  Successfully processed: 38836
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for samsung_firefox_1000:
+  Total flows: 41926
+  Successfully processed: 41926
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for samsung_chrome_1000:
+  Total flows: 41290
+  Successfully processed: 41290
+  Failed: 0
+  Success rate: 100.00%
+
+
+Split Summary for Monday-WorkingHours:
+  Total flows: 249143
+  Successfully processed: 249143
+  Failed: 0
+  Success rate: 100.00%
+
