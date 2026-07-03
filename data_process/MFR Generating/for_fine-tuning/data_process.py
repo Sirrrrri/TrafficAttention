@@ -159,24 +159,6 @@ def read_pcap_mfr_data(pcap_path, max_packets=None, max_valid=None):
         return None
 
 
-def make_packet_matrix(header, payload):
-    """将单个包的MFR header/payload转成8行token矩阵。"""
-    matrix_rows = []
-
-    for row_idx in range(2):
-        start = row_idx * 80
-        row_hex = header[start:start+80]
-        tokens = [row_hex[i:i+4] for i in range(0, len(row_hex), 4)]
-        matrix_rows.append(' '.join(tokens))
-
-    for row_idx in range(6):
-        start = row_idx * 80
-        row_hex = payload[start:start+80]
-        tokens = [row_hex[i:i+4] for i in range(0, len(row_hex), 4)]
-        matrix_rows.append(' '.join(tokens))
-
-    return matrix_rows
-
 
 def make_flow_matrix(packet_data):
     """将最多5个包的MFR数据横向拼接成流级8行token矩阵。"""
@@ -206,24 +188,6 @@ def make_flow_matrix(packet_data):
 
     return flow_matrix_rows
 
-
-def read_packet_matrices(pcap_path, max_packets=1000):
-    """
-    读取pcap文件，为每个数据包生成token矩阵
-    返回: 数据包token矩阵列表，每个矩阵为8行字符串列表
-    - 每行: 40个bytes = 20个tokens，每个token是2 bytes（4个十六进制字符）
-    - 第1-2行: header (80字节 = 40 tokens)，每行20 tokens
-    - 第3-8行: payload (240字节 = 120 tokens)，每行20 tokens
-    总共: 80 + 240 = 320字节 = 8行
-
-    参数:
-        pcap_path: pcap文件路径
-        max_packets: 最大处理的数据包数量（防止内存溢出）
-    """
-    mfr_packets = read_pcap_mfr_data(pcap_path, max_packets=max_packets)
-    if not mfr_packets:
-        return []
-    return [make_packet_matrix(header, payload) for header, payload in mfr_packets]
 
 
 # 流的前5个数据包的MFR矩阵横向拼接而成
@@ -469,7 +433,7 @@ def save_vocab(vocab_path):
 
 def process_single_pcap(pcap_file, dataset_name, class_name):
     """
-    处理单个pcap文件，提取数据包和流矩阵
+    处理单个pcap文件，只提取流级别MFR矩阵
 
     参数:
         pcap_file: pcap文件路径
@@ -477,34 +441,30 @@ def process_single_pcap(pcap_file, dataset_name, class_name):
         class_name: 类别名称
 
     返回:
-        (packet_matrices, flow_matrix) 或 (None, None)
+        flow_matrix 或 None
     """
     try:
         mfr_packets = read_pcap_mfr_data(pcap_file, max_packets=1000)
         if not mfr_packets:
-            return (None, None)
+            return None
 
-        packet_matrices = [make_packet_matrix(header, payload) for header, payload in mfr_packets]
-        flow_matrix = make_flow_matrix(mfr_packets[:5])
-
-        return (packet_matrices, flow_matrix)
+        return make_flow_matrix(mfr_packets[:5])
 
     except MemoryError:
         print(f"  内存不足，跳过文件: {os.path.basename(pcap_file)}")
-        return (None, None)
+        return None
     except KeyboardInterrupt:
         raise
     except Exception as e:
         print(f"  处理文件出错 {os.path.basename(pcap_file)}: {str(e)[:100]}")
-        return (None, None)
+        return None
 
 
 def process_class_mfr_matrices(class_dir, output_dir, dataset_name, class_name, train_ratio=0.7, test_ratio=0.2, valid_ratio=0.1, num_workers=6, batch_size=10000, log_interval=100):
     """
-    为单个类别目录生成TXT文本文件（使用多进程）：
-    1. packet_mfr/ - 数据包级别的MFR矩阵（每个数据包一个.txt文件，8行×20tokens）
-    2. flow_mfr/ - 流级别的MFR矩阵（每条流一个.txt文件，8行×100tokens）
-    
+    为单个类别目录生成流级别MFR矩阵TXT文本文件：
+    flow_mfr/ - 每条流一个.txt文件，8行×100tokens
+
     参数:
         class_dir: 类别目录路径，直接包含.pcap文件
         output_dir: 输出目录
@@ -517,56 +477,43 @@ def process_class_mfr_matrices(class_dir, output_dir, dataset_name, class_name, 
         batch_size: 每处理多少个文件后保存一次（默认10000，避免内存溢出）
         log_interval: 每处理多少个文件后输出一次日志（默认100）
     """
-    
+
     # 查找该目录下的所有pcap文件
     pcap_files = glob.glob(os.path.join(class_dir, '*.pcap'))
-    
+
     if len(pcap_files) == 0:
         print(f"⚠️  目录中没有找到.pcap文件: {class_dir}")
         return None
-    
+
     # 打乱文件顺序
     random.shuffle(pcap_files)
-    
+
     # 分割数据集
     n_total = len(pcap_files)
     n_train = int(n_total * train_ratio)
     n_test = int(n_total * test_ratio)
     n_valid = n_total - n_train - n_test
-    
+
     train_files = pcap_files[:n_train]
     test_files = pcap_files[n_train:n_train+n_test]
     valid_files = pcap_files[n_train+n_test:]
-    
+
     # 创建输出目录结构
     makedir(output_dir)
-    
-    # 创建packet_mfr和flow_mfr目录，每个目录下有train/test/valid子目录
-    packet_base_dir = os.path.join(output_dir, 'packet_mfr')
+
+    # 只创建flow_mfr目录，每个目录下有train/test/valid子目录
     flow_base_dir = os.path.join(output_dir, 'flow_mfr')
-    
+
     for split in ['train', 'test', 'valid']:
-        makedir(os.path.join(packet_base_dir, split))
         makedir(os.path.join(flow_base_dir, split))
-    
+
     # 统计计数器
     sample_counts = {
-        'train': {'packet': 0, 'flow': 0},
-        'test': {'packet': 0, 'flow': 0},
-        'valid': {'packet': 0, 'flow': 0}
+        'train': {'flow': 0},
+        'test': {'flow': 0},
+        'valid': {'flow': 0}
     }
-    
-    def save_packet_txt(matrix, split_name, packet_id):
-        """保存单个数据包矩阵为.txt文件"""
-        filename = f"packet_{packet_id:08d}.txt"
-        filepath = os.path.join(packet_base_dir, split_name, filename)
-        with open(filepath, 'w', encoding='utf-8') as f:
-            # 第一行：类别标签
-            f.write(f"{dataset_name} {class_name}\n")
-            # 后续8行：矩阵数据
-            for row in matrix:
-                f.write(f"{row}\n")
-    
+
     def save_flow_txt(matrix, split_name, flow_id):
         """保存单个流矩阵为.txt文件"""
         filename = f"flow_{flow_id:08d}.txt"
@@ -577,79 +524,67 @@ def process_class_mfr_matrices(class_dir, output_dir, dataset_name, class_name, 
             # 后续8行：矩阵数据
             for row in matrix:
                 f.write(f"{row}\n")
-    
+
     def process_files_parallel(files, split_name):
-        """使用多进程并行处理文件，直接保存为.txt文件"""
+        """使用多进程并行处理文件，直接保存流级别.txt文件"""
         processed_count = 0
         flow_success_count = 0
         flow_fail_count = 0
-        
+
         print(f"    🚀 [{split_name}] 开始处理 {len(files)} 个文件...")
-        
+
         with ProcessPoolExecutor(max_workers=num_workers) as executor:
-            # 提交所有任务
-            futures = {executor.submit(process_single_pcap, pcap_file, dataset_name, class_name): pcap_file 
+            futures = {executor.submit(process_single_pcap, pcap_file, dataset_name, class_name): pcap_file
                       for pcap_file in files}
-            
+
             # 禁用tqdm实时进度条，改用自定义日志输出（每log_interval个文件输出一次）
-            # 这样可以大幅减少日志文件的更新频率
             for future in as_completed(futures, timeout=None):
                 pcap_file = futures[future]
                 try:
-                    # 设置超时时间为60秒
-                    packet_matrices, flow_matrix = future.result(timeout=60)
-                    
-                    # 保存数据包矩阵为.txt文件（每个pcap中可能有多个packet）
-                    if packet_matrices:
-                        for matrix in packet_matrices:
-                            sample_counts[split_name]['packet'] += 1
-                            save_packet_txt(matrix, split_name, sample_counts[split_name]['packet'])
-                    
-                    # 保存流矩阵为.txt文件（每个pcap一个flow）
+                    flow_matrix = future.result(timeout=60)
+
                     if flow_matrix is not None:
                         sample_counts[split_name]['flow'] += 1
                         save_flow_txt(flow_matrix, split_name, sample_counts[split_name]['flow'])
                         flow_success_count += 1
                     else:
                         flow_fail_count += 1
-                    
+
                     processed_count += 1
-                    
+
                     # 每处理log_interval个文件，输出一次日志
                     if processed_count % log_interval == 0:
-                        print(f"    📝 [{split_name}] 已处理 {processed_count}/{len(files)} 个文件 ({processed_count/len(files)*100:.1f}%), 数据包样本: {sample_counts[split_name]['packet']}, 流样本: {sample_counts[split_name]['flow']}")
-                        
+                        print(f"    📝 [{split_name}] 已处理 {processed_count}/{len(files)} 个文件 ({processed_count/len(files)*100:.1f}%), 流样本: {sample_counts[split_name]['flow']}")
+
                 except TimeoutError:
                     print(f"  ⚠️  处理超时 {os.path.basename(pcap_file)}")
                     flow_fail_count += 1
                 except Exception as e:
                     print(f"  ⚠️  处理出错 {os.path.basename(pcap_file)}: {str(e)[:50]}")
                     flow_fail_count += 1
-        
+
         # 打印最终处理统计
         total_files = len(files)
         success_rate = (flow_success_count / total_files * 100) if total_files > 0 else 0
-        print(f"    ✅ [{split_name}] 全部完成! 处理 {processed_count}/{total_files} 个文件, 数据包样本: {sample_counts[split_name]['packet']}, 流样本: {sample_counts[split_name]['flow']}")
+        print(f"    ✅ [{split_name}] 全部完成! 处理 {processed_count}/{total_files} 个文件, 流样本: {sample_counts[split_name]['flow']}")
         print(f"    📊 {split_name} 流生成统计: 成功 {flow_success_count}/{total_files} ({success_rate:.1f}%), 失败 {flow_fail_count}")
-    
+
     # 处理训练集（使用{num_workers}个进程）
     print(f"  处理训练集（{num_workers}进程，每{log_interval}个文件输出日志）...")
     process_files_parallel(train_files, 'train')
-    
+
     # 处理测试集（使用{num_workers}个进程）
     print(f"  处理测试集（{num_workers}进程，每{log_interval}个文件输出日志）...")
     process_files_parallel(test_files, 'test')
-    
+
     # 处理验证集（使用{num_workers}个进程）
     print(f"  处理验证集（{num_workers}进程，每{log_interval}个文件输出日志）...")
     process_files_parallel(valid_files, 'valid')
-    
+
     # 打印统计信息
-    print(f"  ✓ 数据包.txt文件: {sample_counts['train']['packet']} train, {sample_counts['test']['packet']} test, {sample_counts['valid']['packet']} valid")
     print(f"  ✓ 流.txt文件: {sample_counts['train']['flow']} train, {sample_counts['test']['flow']} test, {sample_counts['valid']['flow']} valid")
-    
+
     return {
-        'packet_samples': sample_counts['train']['packet'] + sample_counts['test']['packet'] + sample_counts['valid']['packet'],
         'flow_samples': sample_counts['train']['flow'] + sample_counts['test']['flow'] + sample_counts['valid']['flow'],
         'counts': sample_counts
     }
@@ -995,12 +930,11 @@ if __name__ == '__main__':
             print(f"找到 {len(class_dirs)} 个子目录")
             
             dataset_stats = {
-                'total_packet_samples': 0, 
                 'total_flow_samples': 0, 
                 'classes': {}
             }
             
-            # 为每个子目录生成TXT文本文件（packet_mfr/ 和 flow_mfr/ 目录）
+            # 为每个子目录生成流级别MFR矩阵TXT文本文件
             for class_idx, class_dir in enumerate(class_dirs, 1):
                 class_name = os.path.basename(class_dir)
                 
@@ -1018,7 +952,7 @@ if __name__ == '__main__':
                 class_output_dir = os.path.join(dataset_output_dir, class_name)
                 makedir(class_output_dir)
                 
-                # 使用新函数处理该类别，生成packet_mfr/和flow_mfr/目录及.txt文件
+                # 使用新函数处理该类别，生成flow_mfr目录及.txt文件
                 result = process_class_mfr_matrices(
                     class_dir=class_dir,
                     output_dir=class_output_dir,
@@ -1030,21 +964,17 @@ if __name__ == '__main__':
                 )
                 
                 if result is not None:
-                    packet_total = result['packet_samples']
                     flow_total = result['flow_samples']
                     
                     dataset_stats['classes'][class_name] = {
-                        'packet_samples': packet_total,
                         'flow_samples': flow_total
                     }
-                    dataset_stats['total_packet_samples'] += packet_total
                     dataset_stats['total_flow_samples'] += flow_total
                     
-                    print(f"  ✓ {class_name}: {packet_total} 个数据包.txt文件, {flow_total} 个流.txt文件")
+                    print(f"  ✓ {class_name}: {flow_total} 个流.txt文件")
             
             results[dataset_name] = dataset_stats
             print(f"\n✓ {dataset_name} 处理完成!")
-            print(f"  总数据包样本: {dataset_stats['total_packet_samples']}")
             print(f"  总流样本: {dataset_stats['total_flow_samples']}")
             
         except Exception as e:
@@ -1066,10 +996,6 @@ if __name__ == '__main__':
     for dataset_name in results.keys():
         print(f"    {dataset_name}_MFR/")
         print(f"      <class_name>/")
-        print(f"        ├── packet_mfr/        (数据包级别矩阵)")
-        print(f"        │   ├── train/         (训练集.txt文件)")
-        print(f"        │   ├── test/          (测试集.txt文件)")
-        print(f"        │   └── valid/         (验证集.txt文件)")
         print(f"        └── flow_mfr/          (流级别矩阵)")
         print(f"            ├── train/         (训练集.txt文件)")
         print(f"            ├── test/          (测试集.txt文件)")
@@ -1082,27 +1008,13 @@ if __name__ == '__main__':
         print(f"  成功处理数据集: {len(results)}/{len(DATASETS)}")
         for dataset_name, stats in results.items():
             print(f"    ✓ {dataset_name}: {len(stats['classes'])} 个类别")
-            print(f"       - 数据包样本: {stats['total_packet_samples']}")
             print(f"       - 流样本: {stats['total_flow_samples']}")
     
     print("\n💡 后续步骤:")
-    print("  1. 查看各个 <dataset>_MFR/<class_name>/packet_mfr/ 和 flow_mfr/ 目录")
+    print("  1. 查看各个 <dataset>_MFR/<class_name>/flow_mfr/ 目录")
     print("  2. 使用生成的.txt文件进行模型训练")
     print("")
     print("📖 数据格式说明:")
-    print("  【数据包级别矩阵】packet_mfr/*.txt:")
-    print("    - 文件命名: packet_00000001.txt, packet_00000002.txt, ...")
-    print("    - 文件格式: 共9行")
-    print("      ├─ 第1行: 类别标签 (如: CICIoT2022 Attacks_Flood)")
-    print("      └─ 第2-9行: 8行MFR矩阵数据")
-    print("    - 每个数据包: 320字节 (header 80字节 + payload 240字节)")
-    print("    - Token格式: 2 bytes = 1 token (4个十六进制字符)")
-    print("    - 矩阵格式: 8行字符串，每行空格分隔的tokens")
-    print("    - 矩阵内容:")
-    print("      ├─ 第1-2行: header (每行40字节=20个tokens，空格分隔)")
-    print("      └─ 第3-8行: payload (每行40字节=20个tokens，空格分隔)")
-    print("    - 示例: '4500 001c 1c46 4000 ...' (每行20个tokens)")
-    print("")
     print("  【流级别矩阵】flow_mfr/*.txt:")
     print("    - 文件命名: flow_00000001.txt, flow_00000002.txt, ...")
     print("    - 文件格式: 共9行")
@@ -1118,7 +1030,7 @@ if __name__ == '__main__':
     print("")
     print("  【性能优化】:")
     print("    - 日志更新：每处理100个文件输出一次进度日志（不使用tqdm实时进度条）")
-    print("    - 实时保存：每个数据包/流矩阵立即保存为独立.txt文件")
+    print("    - 实时保存：每个流矩阵立即保存为独立.txt文件")
     print("    - 避免内存溢出和日志文件频繁更新")
     print("")
 
