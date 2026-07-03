@@ -4,10 +4,9 @@
 import os
 import glob
 import json
-import binascii
 import random
 import numpy as np
-import scapy.all as scapy
+import dpkt
 from tqdm import tqdm
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -22,72 +21,190 @@ def makedir(path):
         pass
 
 
-def extract_packet_mfr(packet):
+def get_ip_offset(datalink):
     """
-    从单个数据包提取MFR数据
+    根据pcap文件的datalink类型返回IP头在packet_data中的字节偏移。
+
+    常见datalink类型:
+        1   (DLT_EN10MB)    - 以太网帧，IP头偏移14字节
+        101 (DLT_RAW)       - 裸IP包，IP头偏移0字节
+        12  (DLT_RAW 旧版)  - 裸IP包，IP头偏移0字节
+        113 (DLT_LINUX_SLL) - Linux Cooked Capture，IP头偏移16字节
+        276 (DLT_LINUX_SLL2)- Linux Cooked Capture v2，IP头偏移20字节
+
+    返回:
+        int: IP头的字节偏移量，未知类型返回None
+    """
+    offset_map = {
+        1: 14,
+        101: 0,
+        12: 0,
+        113: 16,
+        276: 20,
+    }
+    return offset_map.get(datalink, None)
+
+
+def open_pcap_reader(file_handle):
+    """尝试用 dpkt 打开 pcap 或 pcapng 文件，返回 (reader, datalink)。"""
+    try:
+        file_handle.seek(0)
+        reader = dpkt.pcap.Reader(file_handle)
+        return reader, reader.datalink()
+    except Exception:
+        pass
+
+    try:
+        file_handle.seek(0)
+        reader = dpkt.pcapng.Reader(file_handle)
+        return reader, reader.datalink()
+    except Exception:
+        pass
+
+    return None, None
+
+
+def normalize_mfr_fields(header_bytes, payload_bytes):
+    """将header/payload标准化为MFR需要的固定十六进制长度。"""
+    header = header_bytes.hex()
+    payload = payload_bytes.hex()
+
+    if len(header) > 160:
+        header = header[:160]
+    elif len(header) < 160:
+        header += '0' * (160 - len(header))
+
+    if len(payload) > 480:
+        payload = payload[:480]
+    elif len(payload) < 480:
+        payload += '0' * (480 - len(payload))
+
+    return (header, payload)
+
+
+def extract_packet_mfr_from_ip_bytes(ip_bytes):
+    """
+    从IPv4层原始字节中提取MFR数据。
+
     返回: (header, payload) 或 None
-    - header: IP层去除payload后的部分 (包括IP层header、传输层header和应用层的部分header，80字节，160个十六进制字符)
-    - payload: 应用层载荷 (240字节，480个十六进制字符)
+    - header: IP层header + 传输层header，标准化为80字节
+    - payload: TCP/UDP应用层载荷，标准化为240字节
     """
     try:
-        header = None
-        payload = ''
-        
-        # 情况1: 有IP层（正常pcap）
-        if 'IP' in packet:
-            # 提取整个IP层
-            header = (binascii.hexlify(bytes(packet['IP']))).decode()
-            
-            # 提取应用层载荷
-            try:
-                payload = (binascii.hexlify(bytes(packet['Raw']))).decode()
-                # 从header中移除payload部分
-                header = header.replace(payload, '')
-            except:
-                payload = ''
-        
-        # 情况2: 没有IP层，但Raw层包含IP数据（匿名化pcap）
-        elif 'Raw' in packet:
-            # 从Raw层提取数据
-            raw_data = (binascii.hexlify(bytes(packet['Raw']))).decode()
-            
-            # 检查是否是IP数据（检查IP版本号）
-            if len(raw_data) >= 8:
-                first_byte = int(raw_data[0:2], 16)
-                version = (first_byte >> 4) & 0x0F
-                
-                # 如果是IPv4
-                if version == 4:
-                    # header: 前160个字符（80字节）
-                    # payload: 从160开始的480个字符（240字节）
-                    header = raw_data[:160] if len(raw_data) >= 160 else raw_data
-                    payload = raw_data[160:640] if len(raw_data) > 160 else ''
-                else:
-                    return None
-            else:
-                return None
-        else:
-            # 既没有IP层也没有Raw层
+        if len(ip_bytes) < 20:
             return None
-        
-        if header is None:
+
+        version = (ip_bytes[0] >> 4) & 0x0F
+        ihl = (ip_bytes[0] & 0x0F) * 4
+        if version != 4 or ihl < 20 or len(ip_bytes) < ihl:
             return None
-        
-        # 标准化header长度为160个十六进制字符 (80字节)
-        if len(header) > 160:
-            header = header[:160]
-        elif len(header) < 160:
-            header += '0' * (160 - len(header))
-        
-        # 标准化payload长度为480个十六进制字符 (240字节)
-        if len(payload) > 480:
-            payload = payload[:480]
-        elif len(payload) < 480:
-            payload += '0' * (480 - len(payload))
-        
-        return (header, payload)
-    except:
+
+        total_len = int.from_bytes(ip_bytes[2:4], byteorder='big')
+        if total_len < ihl:
+            return None
+        if total_len > len(ip_bytes):
+            total_len = len(ip_bytes)
+
+        ip_packet = ip_bytes[:total_len]
+        protocol = ip_packet[9]
+        frag_info = int.from_bytes(ip_packet[6:8], byteorder='big')
+        frag_offset = frag_info & 0x1FFF
+        payload_start = total_len
+
+        if frag_offset == 0 and protocol == 6 and len(ip_packet) >= ihl + 20:
+            tcp_header_len = ((ip_packet[ihl + 12] >> 4) & 0x0F) * 4
+            if tcp_header_len >= 20 and len(ip_packet) >= ihl + tcp_header_len:
+                payload_start = ihl + tcp_header_len
+        elif frag_offset == 0 and protocol == 17 and len(ip_packet) >= ihl + 8:
+            payload_start = ihl + 8
+
+        header_bytes = ip_packet[:payload_start]
+        payload_bytes = ip_packet[payload_start:]
+        return normalize_mfr_fields(header_bytes, payload_bytes)
+    except Exception:
         return None
+
+
+def extract_packet_mfr(packet_data, datalink):
+    """根据datalink类型从原始packet_data中定位IPv4头并提取MFR数据。"""
+    ip_offset = get_ip_offset(datalink)
+    if ip_offset is None or len(packet_data) < ip_offset + 20:
+        return None
+    return extract_packet_mfr_from_ip_bytes(packet_data[ip_offset:])
+
+
+def read_pcap_mfr_data(pcap_path, max_packets=None, max_valid=None):
+    """读取pcap/pcapng，按datalink偏移提取MFR数据列表；读失败或未知链路类型返回None。"""
+    try:
+        with open(pcap_path, 'rb') as f:
+            pcap_reader, datalink = open_pcap_reader(f)
+            if pcap_reader is None or get_ip_offset(datalink) is None:
+                return None
+
+            data = []
+            for packet_idx, (_, packet_data) in enumerate(pcap_reader):
+                if max_packets is not None and packet_idx >= max_packets:
+                    break
+
+                mfr_data = extract_packet_mfr(packet_data, datalink)
+                if mfr_data is None:
+                    continue
+
+                data.append(mfr_data)
+                if max_valid is not None and len(data) >= max_valid:
+                    break
+
+            return data
+    except Exception:
+        return None
+
+
+def make_packet_matrix(header, payload):
+    """将单个包的MFR header/payload转成8行token矩阵。"""
+    matrix_rows = []
+
+    for row_idx in range(2):
+        start = row_idx * 80
+        row_hex = header[start:start+80]
+        tokens = [row_hex[i:i+4] for i in range(0, len(row_hex), 4)]
+        matrix_rows.append(' '.join(tokens))
+
+    for row_idx in range(6):
+        start = row_idx * 80
+        row_hex = payload[start:start+80]
+        tokens = [row_hex[i:i+4] for i in range(0, len(row_hex), 4)]
+        matrix_rows.append(' '.join(tokens))
+
+    return matrix_rows
+
+
+def make_flow_matrix(packet_data):
+    """将最多5个包的MFR数据横向拼接成流级8行token矩阵。"""
+    packet_data = list(packet_data[:5])
+    if len(packet_data) < 5:
+        for _ in range(5 - len(packet_data)):
+            packet_data.append(('0' * 160, '0' * 480))
+
+    packet_hex_rows = []
+    for header, payload in packet_data:
+        pkt_rows = []
+        for row_idx in range(2):
+            start = row_idx * 80
+            pkt_rows.append(header[start:start+80])
+        for row_idx in range(6):
+            start = row_idx * 80
+            pkt_rows.append(payload[start:start+80])
+        packet_hex_rows.append(pkt_rows)
+
+    flow_matrix_rows = []
+    for row_idx in range(8):
+        row_hex = ''
+        for pkt_idx in range(5):
+            row_hex += packet_hex_rows[pkt_idx][row_idx]
+        tokens = [row_hex[i:i+4] for i in range(0, len(row_hex), 4)]
+        flow_matrix_rows.append(' '.join(tokens))
+
+    return flow_matrix_rows
 
 
 def read_packet_matrices(pcap_path, max_packets=1000):
@@ -98,54 +215,15 @@ def read_packet_matrices(pcap_path, max_packets=1000):
     - 第1-2行: header (80字节 = 40 tokens)，每行20 tokens
     - 第3-8行: payload (240字节 = 120 tokens)，每行20 tokens
     总共: 80 + 240 = 320字节 = 8行
-    
+
     参数:
         pcap_path: pcap文件路径
         max_packets: 最大处理的数据包数量（防止内存溢出）
     """
-    try:
-        # 使用scapy读取，限制数据包数量
-        packets = scapy.rdpcap(pcap_path, count=max_packets)
-    except Exception as e:
-        # 静默处理错误，避免打印过多信息
+    mfr_packets = read_pcap_mfr_data(pcap_path, max_packets=max_packets)
+    if not mfr_packets:
         return []
-    
-    packet_matrices = []
-    
-    for packet in packets:
-        try:
-            mfr_data = extract_packet_mfr(packet)
-            if mfr_data is None:
-                continue
-            
-            header, payload = mfr_data
-            # header: 160个十六进制字符 = 80字节
-            # payload: 480个十六进制字符 = 240字节
-            
-            # 构建矩阵: 8行，每行40个bytes（20个tokens）
-            matrix_rows = []
-            
-            # 第1-2行: header (80字节)，每行40字节=20个tokens
-            for row_idx in range(2):
-                start = row_idx * 80  # 每行40字节 = 80个十六进制字符
-                row_hex = header[start:start+80]
-                # 转换为tokens：每4个十六进制字符一个token
-                tokens = [row_hex[i:i+4] for i in range(0, len(row_hex), 4)]
-                matrix_rows.append(' '.join(tokens))
-            
-            # 第3-8行: payload (240字节)，每行40字节=20个tokens
-            for row_idx in range(6):
-                start = row_idx * 80  # 每行40字节 = 80个十六进制字符
-                row_hex = payload[start:start+80]
-                tokens = [row_hex[i:i+4] for i in range(0, len(row_hex), 4)]
-                matrix_rows.append(' '.join(tokens))
-            
-            packet_matrices.append(matrix_rows)
-        except Exception:
-            # 跳过有问题的数据包
-            continue
-    
-    return packet_matrices
+    return [make_packet_matrix(header, payload) for header, payload in mfr_packets]
 
 
 # 流的前5个数据包的MFR矩阵横向拼接而成
@@ -157,61 +235,10 @@ def read_flow_matrix(pcap_path):
     - 流矩阵前2行: 5个数据包的header横向拼接，每行100 tokens
     - 流矩阵后6行: 5个数据包的payload横向拼接，每行100 tokens
     """
-    try:
-        # 只读取前5个数据包即可
-        packets = scapy.rdpcap(pcap_path, count=5)
-    except Exception as e:
-        # 静默处理错误
+    packet_data = read_pcap_mfr_data(pcap_path, max_valid=5)
+    if not packet_data:
         return None
-    
-    # 提取前5个数据包的MFR数据
-    packet_data = []
-    for packet in packets:
-        try:
-            mfr_data = extract_packet_mfr(packet)
-            if mfr_data is None:
-                continue
-            
-            packet_data.append(mfr_data)
-            
-            if len(packet_data) >= 5:
-                break
-        except Exception:
-            continue
-    
-    # 如果不足5个包，用零填充
-    if len(packet_data) < 5:
-        for i in range(5 - len(packet_data)):
-            packet_data.append(('0' * 160, '0' * 480))
-    
-    try:
-        # 为每个数据包生成8行token矩阵（每行是十六进制字符串）
-        packet_hex_rows = []
-        for header, payload in packet_data:
-            pkt_rows = []
-            # 第1-2行: header (80字节)，每行40字节
-            for row_idx in range(2):
-                start = row_idx * 80
-                pkt_rows.append(header[start:start+80])
-            # 第3-8行: payload (240字节)，每行40字节
-            for row_idx in range(6):
-                start = row_idx * 80
-                pkt_rows.append(payload[start:start+80])
-            packet_hex_rows.append(pkt_rows)
-        
-        # 横向拼接5个数据包的矩阵 -> 8行，每行200字节（100个tokens）
-        flow_matrix_rows = []
-        for row_idx in range(8):  # 8行
-            row_hex = ''
-            for pkt_idx in range(5):  # 5个数据包
-                row_hex += packet_hex_rows[pkt_idx][row_idx]  # 每个数据包贡献40字节
-            # 转换为tokens：每4个十六进制字符一个token
-            tokens = [row_hex[i:i+4] for i in range(0, len(row_hex), 4)]
-            flow_matrix_rows.append(' '.join(tokens))
-        
-        return flow_matrix_rows
-    except Exception:
-        return None
+    return make_flow_matrix(packet_data)
 
 
 def read_MFR_bytes(pcap_path):
@@ -221,41 +248,20 @@ def read_MFR_bytes(pcap_path):
     - header: IP层去除payload后的部分（80字节，160个十六进制字符)
     - payload: 应用层载荷数据（Raw层，纯数据部分）- 480个十六进制字符 (240字节)
     总共: 5 * (160 + 480) = 3200个十六进制字符
-    
-    处理流程：
-    1. 提取整个IP层
-    2. 提取Raw层（payload）
-    3. 从IP层中移除payload部分，得到header
-    4. header标准化为80字节，payload标准化为240字节
     """
-    try:
-        packets = scapy.rdpcap(pcap_path)
-    except Exception as e:
-        print(f"Error reading {pcap_path}: {e}")
+    data = read_pcap_mfr_data(pcap_path, max_valid=5)
+    if not data:
         return None
-    
-    data = []
-    for packet in packets:
-        mfr_data = extract_packet_mfr(packet)
-        if mfr_data is None:
-            continue
-        
-        data.append(mfr_data)
-        
-        if len(data) >= 5:
-            break
-    
-    # 如果不足5个包，用零填充
+
     if len(data) < 5:
-        for i in range(5 - len(data)):
+        for _ in range(5 - len(data)):
             data.append(('0' * 160, '0' * 480))
-    
-    # 合并所有header和payload
+
     final_data = ''
     for h, p in data:
         final_data += h
         final_data += p
-    
+
     return final_data
 
 
@@ -464,116 +470,32 @@ def save_vocab(vocab_path):
 def process_single_pcap(pcap_file, dataset_name, class_name):
     """
     处理单个pcap文件，提取数据包和流矩阵
-    
+
     参数:
         pcap_file: pcap文件路径
         dataset_name: 数据集名称
         class_name: 类别名称
-    
+
     返回:
         (packet_matrices, flow_matrix) 或 (None, None)
     """
     try:
-        # 一次性读取pcap文件，避免重复读取导致的问题
-        try:
-            packets = scapy.rdpcap(pcap_file, count=1000)
-        except Exception as e:
-            # 如果读取失败，打印错误信息
-            print(f"  ⚠️  无法读取文件 {os.path.basename(pcap_file)}: {str(e)[:50]}")
+        mfr_packets = read_pcap_mfr_data(pcap_file, max_packets=1000)
+        if len(mfr_packets) == 0:
             return (None, None)
-        
-        # 从读取的数据包中提取packet_matrices
-        packet_matrices = []
-        for packet in packets:
-            try:
-                mfr_data = extract_packet_mfr(packet)
-                if mfr_data is None:
-                    continue
-                
-                header, payload = mfr_data
-                matrix_rows = []
-                
-                # 第1-2行: header
-                for row_idx in range(2):
-                    start = row_idx * 80
-                    row_hex = header[start:start+80]
-                    tokens = [row_hex[i:i+4] for i in range(0, len(row_hex), 4)]
-                    matrix_rows.append(' '.join(tokens))
-                
-                # 第3-8行: payload
-                for row_idx in range(6):
-                    start = row_idx * 80
-                    row_hex = payload[start:start+80]
-                    tokens = [row_hex[i:i+4] for i in range(0, len(row_hex), 4)]
-                    matrix_rows.append(' '.join(tokens))
-                
-                packet_matrices.append(matrix_rows)
-            except Exception:
-                continue
-        
-        # 从前5个有效数据包提取flow_matrix（从所有包中提取，而不是只从前5个包）
-        flow_matrix = None
-        try:
-            packet_data = []
-            # 从所有包中提取前5个有效的MFR数据包
-            for packet in packets:
-                try:
-                    mfr_data = extract_packet_mfr(packet)
-                    if mfr_data is None:
-                        continue
-                    packet_data.append(mfr_data)
-                    if len(packet_data) >= 5:
-                        break
-                except Exception:
-                    continue
-            
-            # 如果无法提取到任何有效包，返回None（不生成全零矩阵）
-            if len(packet_data) == 0:
-                flow_matrix = None
-            else:
-                # 如果不足5个包，用零填充
-                if len(packet_data) < 5:
-                    for i in range(5 - len(packet_data)):
-                        packet_data.append(('0' * 160, '0' * 480))
-                
-                # 生成流矩阵
-                packet_hex_rows = []
-                for header, payload in packet_data:
-                    pkt_rows = []
-                    for row_idx in range(2):
-                        start = row_idx * 80
-                        pkt_rows.append(header[start:start+80])
-                    for row_idx in range(6):
-                        start = row_idx * 80
-                        pkt_rows.append(payload[start:start+80])
-                    packet_hex_rows.append(pkt_rows)
-                
-                flow_matrix_rows = []
-                for row_idx in range(8):
-                    row_hex = ''
-                    for pkt_idx in range(5):
-                        row_hex += packet_hex_rows[pkt_idx][row_idx]
-                    tokens = [row_hex[i:i+4] for i in range(0, len(row_hex), 4)]
-                    flow_matrix_rows.append(' '.join(tokens))
-                
-                flow_matrix = flow_matrix_rows
-        except Exception as e:
-            # 流矩阵生成失败不影响数据包矩阵
-            # 记录错误信息以便调试
-            print(f"  ⚠️  流矩阵生成失败 {os.path.basename(pcap_file)}: {type(e).__name__}: {str(e)[:100]}")
-            import traceback
-            print(f"       详细错误: {traceback.format_exc()[:200]}")
-        
+
+        packet_matrices = [make_packet_matrix(header, payload) for header, payload in mfr_packets]
+        flow_matrix = make_flow_matrix(mfr_packets[:5])
+
         return (packet_matrices, flow_matrix)
-        
+
     except MemoryError:
-        print(f"  ⚠️  内存不足，跳过文件: {os.path.basename(pcap_file)}")
+        print(f"  内存不足，跳过文件: {os.path.basename(pcap_file)}")
         return (None, None)
     except KeyboardInterrupt:
-        raise  # 允许用户中断
+        raise
     except Exception as e:
-        # 捕获所有异常，避免子进程崩溃
-        print(f"  ⚠️  处理文件出错 {os.path.basename(pcap_file)}: {str(e)[:100]}")
+        print(f"  处理文件出错 {os.path.basename(pcap_file)}: {str(e)[:100]}")
         return (None, None)
 
 
