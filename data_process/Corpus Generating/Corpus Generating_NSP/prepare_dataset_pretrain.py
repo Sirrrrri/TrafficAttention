@@ -6,13 +6,13 @@
 功能：
 - 从每个流MFR矩阵（8行×100token，共800个token）中提取5个数据包token序列
 - 每个数据包为80个token：Header 40 + Payload 40
+- 将5个数据包按顺序拼接为flow_mfr_tokens（共400 tokens）
 - 生成dataset_pretrain.pt用于预训练任务
 
 输出数据格式：
-- 每个样本: (flow_id, packet_index, packet_tokens, dataset_name)
+- 每个样本: (flow_id, flow_mfr_tokens, dataset_name)
   - flow_id: 8位数字字符串，如 "00000123"
-  - packet_index: 整数 (1-5)，代表数据包在流中的序号
-  - packet_tokens: 包含80个token的列表，每个token是4位十六进制字符串（2bytes），如 "4500"、"0020" 等
+  - flow_mfr_tokens: 包含400个token的列表，排列为packet1(80)+...+packet5(80)
   - dataset_name: 数据集名称
 """
 
@@ -114,9 +114,9 @@ def split_flow_matrix_to_packet80(flow_tokens_lines):
     return packet_samples
 
 
-def read_and_split_flow_to_packets(txt_file):
+def read_flow_to_pretrain_sample(txt_file):
     """
-    读取单个"流MFR矩阵.txt"文件，并将其拆分为5个数据包
+    读取单个"流MFR矩阵.txt"文件，并转换为一个flow级预训练样本
     
     流MFR矩阵格式：
     - 第1行：标签（如"NonVPN NonVPN"或"NonTor NonTor"等，会被跳过）
@@ -131,11 +131,10 @@ def read_and_split_flow_to_packets(txt_file):
         txt_file: "流MFR矩阵.txt"文件路径
     
     返回:
-        list: [(flow_id, packet_index, packet_tokens, dataset_name), ...] 
-              其中flow_id为8位字符串，packet_index为整数(1-5)，
-              packet_tokens为80个4位十六进制字符串组成的列表（每个token=2bytes），
-              dataset_name为数据集名称
-              如果文件无效，返回None
+        tuple: (flow_id, flow_mfr_tokens, dataset_name)
+               其中flow_id为8位字符串，flow_mfr_tokens为400个4位十六进制字符串组成的列表，
+               排列为packet1(80)+packet2(80)+packet3(80)+packet4(80)+packet5(80)，
+               dataset_name为数据集名称。如果文件无效，返回None。
     """
     try:
         with open(txt_file, 'r', encoding='utf-8') as f:
@@ -184,17 +183,15 @@ def read_and_split_flow_to_packets(txt_file):
         if packet_tokens_list is None:
             return None
 
-        packet_samples = []
-        for packet_idx, packet_tokens in enumerate(packet_tokens_list, start=1):
-            # 创建数据包样本：(流ID, 数据包序号, 数据包token列表, 数据集名称)
-            packet_sample = (flow_id, packet_idx, packet_tokens, dataset_name)
-            packet_samples.append(packet_sample)
-        
-        # 只有成功拆分出5个数据包时才返回
-        if len(packet_samples) == 5:
-            return packet_samples
-        else:
+        # 拼接成flow级样本：packet1(80)+...+packet5(80)=400 tokens
+        flow_mfr_tokens = []
+        for packet_tokens in packet_tokens_list:
+            flow_mfr_tokens.extend(packet_tokens)
+
+        if len(flow_mfr_tokens) != PACKET_TOKEN_LENGTH * PACKETS_PER_FLOW:
             return None
+
+        return (flow_id, flow_mfr_tokens, dataset_name)
     
     except Exception as e:
         return None
@@ -339,7 +336,7 @@ def process_files_to_dataset_pretrain(file_list, output_file, max_samples=None,
         save_interval: 数据保存间隔（默认100000个文件）
     """
     processed_flow_count = 0
-    processed_packet_count = 0
+    processed_sample_count = 0
     skipped_count = 0
     total_files = len(file_list)
     
@@ -352,54 +349,54 @@ def process_files_to_dataset_pretrain(file_list, output_file, max_samples=None,
     print(f"Processing dataset_pretrain.pt")
     print(f"{'='*80}")
     print(f"Total flow files to process: {total_files}")
-    print(f"Expected packet samples: {total_files * 5} (5 packets per flow)")
+    print(f"Expected flow samples: {total_files} (1 sample per flow, 5 packets per sample)")
     print(f"Using {processes_num} processes for parallel processing...")
     print(f"Output file: {output_file}")
     
     # 创建dataset文件（以追加模式打开，支持分批写入）
     dataset_writer = open(output_file, 'wb')
     
-    # 数据包样本缓冲区
-    packet_buffer = []
+    # flow级样本缓冲区
+    flow_buffer = []
     
     # 使用进程池处理所有文件
     with Pool(processes=processes_num) as pool:
         file_count = 0
         
-        for packet_samples in pool.imap(read_and_split_flow_to_packets, file_list):
+        for flow_sample in pool.imap(read_flow_to_pretrain_sample, file_list):
             file_count += 1
             
             # 处理结果
-            if packet_samples is not None and len(packet_samples) > 0:
-                # 将5个数据包样本添加到缓冲区
-                packet_buffer.extend(packet_samples)
+            if flow_sample is not None:
+                # 每个flow生成1个flow级样本
+                flow_buffer.append(flow_sample)
                 processed_flow_count += 1
-                processed_packet_count += len(packet_samples)
+                processed_sample_count += 1
             else:
                 skipped_count += 1
             
             # 每处理log_interval个文件，打印一次日志
             if file_count % log_interval == 0:
                 print(f"[Progress] {file_count}/{total_files} flows | "
-                      f"Processed flows={processed_flow_count}, Packets={processed_packet_count}, "
+                      f"Processed flows={processed_flow_count}, Samples={processed_sample_count}, "
                       f"Skipped={skipped_count}")
             
             # 每处理save_interval个文件，将缓冲区的数据追加写入.pt文件
-            if file_count % save_interval == 0 and len(packet_buffer) > 0:
-                print(f"[Save] Writing {len(packet_buffer)} packet samples to disk...")
-                for packet_sample in packet_buffer:
-                    pickle.dump(packet_sample, dataset_writer)
+            if file_count % save_interval == 0 and len(flow_buffer) > 0:
+                print(f"[Save] Writing {len(flow_buffer)} flow samples to disk...")
+                for flow_sample in flow_buffer:
+                    pickle.dump(flow_sample, dataset_writer)
                 dataset_writer.flush()
                 print(f"[Save] Successfully saved | Total processed: {file_count} flows")
-                packet_buffer.clear()
+                flow_buffer.clear()
     
     # 处理完所有文件后，写入剩余缓冲区中的数据
-    if len(packet_buffer) > 0:
-        print(f"\n[Final Save] Writing remaining {len(packet_buffer)} packet samples to disk...")
-        for packet_sample in packet_buffer:
-            pickle.dump(packet_sample, dataset_writer)
+    if len(flow_buffer) > 0:
+        print(f"\n[Final Save] Writing remaining {len(flow_buffer)} flow samples to disk...")
+        for flow_sample in flow_buffer:
+            pickle.dump(flow_sample, dataset_writer)
         dataset_writer.flush()
-        packet_buffer.clear()
+        flow_buffer.clear()
         print(f"[Final Save] Completed")
     
     dataset_writer.close()
@@ -409,12 +406,12 @@ def process_files_to_dataset_pretrain(file_list, output_file, max_samples=None,
     print(f"{'='*80}")
     print(f"✓ Total flow files processed: {file_count}")
     print(f"✓ Successfully processed flows: {processed_flow_count}")
-    print(f"✓ Total packet samples generated: {processed_packet_count}")
+    print(f"✓ Total flow samples generated: {processed_sample_count}")
     print(f"✗ Skipped: {skipped_count}")
     print(f"📁 Dataset saved to: {output_file}")
     print(f"{'='*80}\n")
     
-    return processed_packet_count
+    return processed_sample_count
 
 
 def verify_dataset(dataset_file, num_samples=5):
@@ -442,26 +439,30 @@ def verify_dataset(dataset_file, num_samples=5):
         print(f"✓ Successfully loaded {len(samples)} samples for verification\n")
         
         for i, sample in enumerate(samples):
-            if len(sample) == 4:
-                flow_id, packet_idx, packet_tokens, dataset_name = sample
+            if len(sample) == 3 and isinstance(sample[1], list):
+                flow_id, flow_mfr_tokens, dataset_name = sample
                 print(f"样本 {i+1}:")
                 print(f"  ✓ flow_id: {flow_id} (type: {type(flow_id).__name__})")
-                print(f"  ✓ packet_index: {packet_idx} (type: {type(packet_idx).__name__})")
-                print(f"  ✓ packet_tokens: list({len(packet_tokens)} items, 每个token是4位十六进制字符串)")
+                print(f"  ✓ flow_mfr_tokens: list({len(flow_mfr_tokens)} items, 5个数据包×80 tokens)")
                 print(f"  ✓ dataset_name: {dataset_name}")
-                if packet_tokens:
-                    print(f"    前10个元素: {packet_tokens[:10]}")
-                    print(f"    最后10个元素: {packet_tokens[-10:]}")
-            elif len(sample) == 3:
-                # 向后兼容旧格式
-                flow_id, packet_idx, packet_tokens = sample
-                print(f"样本 {i+1}:")
+                if flow_mfr_tokens:
+                    print(f"    前10个元素: {flow_mfr_tokens[:10]}")
+                    print(f"    最后10个元素: {flow_mfr_tokens[-10:]}")
+            elif len(sample) == 4:
+                # 向后兼容旧packet级格式: (flow_id, packet_idx, packet_tokens, dataset_name)
+                flow_id, packet_idx, packet_tokens, dataset_name = sample
+                print(f"样本 {i+1}: 旧packet级格式")
                 print(f"  ✓ flow_id: {flow_id} (type: {type(flow_id).__name__})")
                 print(f"  ✓ packet_index: {packet_idx} (type: {type(packet_idx).__name__})")
-                print(f"  ✓ packet_tokens: list({len(packet_tokens)} items, 每个token是4位十六进制字符串或整数)")
-                if packet_tokens:
-                    print(f"    前10个元素: {packet_tokens[:10]}")
-                    print(f"    最后10个元素: {packet_tokens[-10:]}")
+                print(f"  ✓ packet_tokens: list({len(packet_tokens)} items)")
+                print(f"  ✓ dataset_name: {dataset_name}")
+            elif len(sample) == 3:
+                # 向后兼容旧packet级格式: (flow_id, packet_idx, packet_tokens)
+                flow_id, packet_idx, packet_tokens = sample
+                print(f"样本 {i+1}: 旧packet级格式")
+                print(f"  ✓ flow_id: {flow_id} (type: {type(flow_id).__name__})")
+                print(f"  ✓ packet_index: {packet_idx} (type: {type(packet_idx).__name__})")
+                print(f"  ✓ packet_tokens: list({len(packet_tokens)} items)")
             else:
                 print(f"样本 {i+1}: 格式不符 (len={len(sample)})")
             print()
@@ -551,10 +552,9 @@ def main():
     print(f"\n📁 输出文件: {output_file}")
     print(f"📊 生成的样本数: {processed_count}")
     print(f"\n📝 数据格式说明:")
-    print(f"  每个样本: (flow_id, packet_index, packet_tokens, dataset_name)")
+    print(f"  每个样本: (flow_id, flow_mfr_tokens, dataset_name)")
     print(f"  - flow_id: 8位字符串 (如 '00000123')")
-    print(f"  - packet_index: 整数 (1-5，代表数据包在流中的序号)")
-    print(f"  - packet_tokens: 80个4位十六进制字符串(2bytes)组成的列表 (如 ['4500', '0020', 'd893', ...])")
+    print(f"  - flow_mfr_tokens: 400个4位十六进制字符串(5个数据包×80 tokens)组成的列表")
     print(f"  - dataset_name: 数据集名称 (如 'NonVPN_MFR'、'NonTor_MFR'、'browser_MFR'、'BenignTraffic_MFR')")
     print(f"\n📌 用于训练时指定: --dataset_path {output_file}")
     print()

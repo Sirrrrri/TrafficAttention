@@ -1,22 +1,22 @@
 """
 微调数据集生成脚本
 从MFR数据集生成用于微调的数据集（.pt格式）
-- 从每个流MFR矩阵（8行×100token，共800个token）提取前4个数据包
+- 从每个流MFR矩阵（8行×100token，共800个token）提取前5个数据包
 - 每个数据包截取80个token
 - 每个流的标签来自所属的类别
-- 在微调时，直接使用前4个数据包进行分类
+- 在微调时，直接使用前5个数据包进行分类
 
 微调数据格式:
   (flow_id, flow_mfr_tokens, category_name, dataset_name, label_id)
   
 其中：
   - flow_id: 流ID (8位数字字符串)
-  - flow_mfr_tokens: 前4个数据包的320个token (4个数据包×80 tokens)
+  - flow_mfr_tokens: 前5个数据包的400个token (5个数据包×80 tokens)
   - category_name: 类别名称 (如 "Idle", "Backdoor")
   - dataset_name: 数据集名称 (如 "CICIoT2022_MFR")
   - label_id: 流量分类标签ID (0~K-1)
 
-微调任务: 给定前4个数据包的MFR矩阵，预测其流量类别标签
+微调任务: 给定前5个数据包的MFR矩阵，预测其流量类别标签
 """
 import os
 import re
@@ -41,7 +41,7 @@ class Config:
         "NUDT_MobileTraffic Dataset_all_MFR": {
             "source": "NUDT_MobileTraffic Dataset_all_MFR",
             "target": "finetuning_NUDT_MobileTraffic Dataset_all_MFR.pt",
-            "total_flows": 41975  # 数据集总流数（每个流提取前4个数据包×80 tokens）
+            "total_flows": 41975  # 数据集总流数（每个流提取前5个数据包×80 tokens）
         },
         "USTC-TFC2016_MFR": {
             "source": "USTC-TFC2016_MFR",
@@ -71,7 +71,7 @@ class Config:
         "NUDT_MobileTraffic Dataset_all_MFR": {
             "source": "NUDT_MobileTraffic Dataset_all_MFR",
             "target": "finetuning_NUDT_MobileTraffic Dataset_all_MFR.pt",
-            "total_flows": 4197  # 数据集总流数（每个流提取前4个数据包×80 tokens）
+            "total_flows": 4197  # 数据集总流数（每个流提取前5个数据包×80 tokens）
         },
         "USTC-TFC2016_MFR": {
             "source": "USTC-TFC2016_MFR",
@@ -100,7 +100,7 @@ class Config:
         "NUDT_MobileTraffic Dataset_all_MFR": {
             "source": "NUDT_MobileTraffic Dataset_all_MFR",
             "target": "finetuning_NUDT_MobileTraffic Dataset_all_MFR.pt",
-            "total_flows": 20987  # 数据集总流数（每个流提取前4个数据包×80 tokens）
+            "total_flows": 20987  # 数据集总流数（每个流提取前5个数据包×80 tokens）
         },
         "USTC-TFC2016_MFR": {
             "source": "USTC-TFC2016_MFR",
@@ -203,12 +203,12 @@ def split_flow_matrix_to_packet80(flow_tokens_lines):
 
 def read_flow_mfr_finetune(txt_file, label_map):
     """
-    读取单个"流MFR矩阵.txt"文件，提取前4个数据包（每个80 tokens）和标签（用于微调）
+    读取单个"流MFR矩阵.txt"文件，提取前5个数据包（每个80 tokens）和标签（用于微调）
     
     流MFR矩阵格式：
     - 第1行：标签（如"CICIoT2022 Idle"）
     - 第2-9行：8行×100列的MFR矩阵数据（前2行为header，后6行为payload，5个包横向拼接）
-    - 提取前4个数据包，每个数据包80个token（Header 40 + Payload 40），共320个token
+    - 提取前5个数据包，每个数据包80个token（Header 40 + Payload 40），共400个token
     
     参数:
         txt_file: 流MFR矩阵文件路径
@@ -216,7 +216,7 @@ def read_flow_mfr_finetune(txt_file, label_map):
     
     返回:
         tuple: (flow_id, flow_mfr_tokens, category_name, dataset_name, label_id)
-               flow_mfr_tokens: 包含320个token (4个数据包×80 tokens)
+               flow_mfr_tokens: 包含400个token (5个数据包×80 tokens)
                如果文件无效，返回None
     """
     try:
@@ -259,9 +259,9 @@ def read_flow_mfr_finetune(txt_file, label_map):
         if packet_tokens_list is None:
             return None
         
-        # 提取前4个数据包，每个数据包80个token（Header 40 + Payload 40）。
+        # 提取前5个数据包，每个数据包80个token（Header 40 + Payload 40）。
         flow_tokens = []
-        for packet_tokens in packet_tokens_list[:4]:
+        for packet_tokens in packet_tokens_list[:5]:
             flow_tokens.extend(packet_tokens)
         
         # 获取标签ID
@@ -477,7 +477,7 @@ def process_files_to_dataset_finetune(category_files, flows_per_class, label_map
     print(f"处理微调数据集（按8:1:1划分）")
     print(f"{'='*80}")
     print(f"总流文件数: {total_files}")
-    print(f"每个流的token数: 320 (前4个数据包×80 tokens)")
+    print(f"每个流的token数: 400 (前5个数据包×80 tokens)")
     print(f"划分比例: 训练集={train_ratio*100:.0f}%, 验证集={dev_ratio*100:.0f}%, 测试集={test_ratio*100:.0f}%")
     print(f"使用 {processes_num} 个进程进行并行处理...")
     print(f"输出文件:")
@@ -570,8 +570,8 @@ def process_files_to_dataset_finetune(category_files, flows_per_class, label_map
     print(f"  - 训练集: {output_base_path}_train.pt ({len(train_samples)} 个流)")
     print(f"  - 验证集: {output_base_path}_dev.pt ({len(dev_samples)} 个流)")
     print(f"  - 测试集: {output_base_path}_test.pt ({len(test_samples)} 个流)")
-    print(f"  每个样本格式: (flow_id, flow_mfr_tokens[320], category_name, dataset_name, label_id)")
-    print(f"  flow_mfr_tokens: 前4个数据包×80 tokens = 320 tokens")
+    print(f"  每个样本格式: (flow_id, flow_mfr_tokens[400], category_name, dataset_name, label_id)")
+    print(f"  flow_mfr_tokens: 前5个数据包×80 tokens = 400 tokens")
     print(f"{'='*80}\n")
     
     return len(train_samples), len(dev_samples), len(test_samples)
@@ -641,7 +641,7 @@ def process_dataset(dataset_key, config):
     print(f"    - 验证集: {output_base}_dev.pt ({dev_count} 个流)")
     print(f"    - 测试集: {output_base}_test.pt ({test_count} 个流)")
     print(f"  ✓ 总流样本数: {train_count + dev_count + test_count}")
-    print(f"  ✓ 每个流包含: 320个token (前4个数据包×80 tokens)")
+    print(f"  ✓ 每个流包含: 400个token (前5个数据包×80 tokens)")
     
 
 def verify_dataset_finetune(dataset_file, num_samples=5):
@@ -676,7 +676,7 @@ def verify_dataset_finetune(dataset_file, num_samples=5):
                 print(f"样本 {i+1}:")
                 print(f"  ✓ flow_id: {flow_id}")
                 print(f"  ✓ flow_mfr_tokens: list({len(flow_mfr_tokens)} tokens)")
-                print(f"    前4个数据包MFR矩阵 (4个数据包×80 tokens = 320 tokens)")
+                print(f"    前5个数据包MFR矩阵 (5个数据包×80 tokens = 400 tokens)")
                 if flow_mfr_tokens:
                     print(f"    前10个tokens: {flow_mfr_tokens[:10]}")
                     print(f"    最后10个tokens: {flow_mfr_tokens[-10:]}")
@@ -721,13 +721,13 @@ def main():
     print(f"数据集数量: {len(config.DATASETS)}")
     print("说明:")
     print("  - 从MFR数据集中分别收集四个数据集的流文件")
-    print("  - 每个流提取前4个数据包: 4个数据包×80 tokens = 320个token")
-    print("  - 保存前4个数据包的MFR矩阵内容和对应的流量类别标签")
+    print("  - 每个流提取前5个数据包: 5个数据包×80 tokens = 400个token")
+    print("  - 保存前5个数据包的MFR矩阵内容和对应的流量类别标签")
     print("  - 各类别按照其文件数量比例分配流数")
     print("  - 按照8:1:1比例随机划分为训练集、验证集和测试集")
     print("  - 每个数据集生成3个文件: *_train.pt, *_dev.pt, *_test.pt")
-    print("  - 输出格式: (flow_id, flow_mfr_tokens[320], category_name, dataset_name, label_id)")
-    print("  - 微调任务: 给定前4个数据包，预测其流量分类标签")
+    print("  - 输出格式: (flow_id, flow_mfr_tokens[400], category_name, dataset_name, label_id)")
+    print("  - 微调任务: 给定前5个数据包，预测其流量分类标签")
     print("="*80)
     
     # 处理每个数据集
@@ -776,13 +776,13 @@ def main():
     print(f"\n📝 数据格式说明:")
     print(f"  每个样本: (flow_id, flow_mfr_tokens, category_name, dataset_name, label_id)")
     print(f"  - flow_id: 8位字符串 (如 '00000123')")
-    print(f"  - flow_mfr_tokens: 320个token的列表 (前4个数据包×80 tokens)")
+    print(f"  - flow_mfr_tokens: 400个token的列表 (前5个数据包×80 tokens)")
     print(f"    * 4位十六进制字符串(2bytes)组成的列表 (如 ['4500', '0020', 'd893', ...])")
     print(f"  - category_name: 类别名称 (如 'Idle', 'Backdoor', 等)")
     print(f"  - dataset_name: 数据集名称 (如 'CICIoT2022_MFR')")
     print(f"  - label_id: 流量分类标签ID (0~K-1)")
     print(f"\n💡 微调任务:")
-    print(f"  - 输入: 前4个数据包的MFR矩阵 (320 tokens)")
+    print(f"  - 输入: 前5个数据包的MFR矩阵 (400 tokens)")
     print(f"  - 输出: 流量类别标签")
     print(f"  - 数据集划分: 训练集:验证集:测试集 = 8:1:1")
     print()
