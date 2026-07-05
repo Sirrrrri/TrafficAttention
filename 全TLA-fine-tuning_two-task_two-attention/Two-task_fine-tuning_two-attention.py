@@ -7,9 +7,9 @@
 - 微调: 给定4个数据包，预测流量类别 (Traffic Classification) -> K分类
 
 输入格式:
-- seq_length: 320 (保持与预训练一致)
+- seq_length: 325 (保持与预训练显式包边界协议一致)
 - 结构: [CLS] + packet1_tokens(80) + [SEP] + packet2_tokens(80) + [SEP] + packet3_tokens(80) + [SEP] + packet4_tokens(80)
-- 每个数据包80个tokens，总共: 1 + 80 + 1 + 80 + 1 + 80 + 1 + 80 = 324 tokens，截断到320
+- 每个数据包80个tokens，总共: 1 + 4 * (80 + 1) = 325 tokens
 - seg: 所有位置都使用 segment 1
   格式: [CLS]=1, packet1=1, [SEP]=1, packet2=1, [SEP]=1, packet3=1, [SEP]=1, packet4=1
 - 标签: 流量类别ID (如 0=Idle, 1=Backdoor, 等)
@@ -37,6 +37,42 @@ from uer.model_saver import save_model
 from uer.opts import finetune_opts
 import tqdm
 import numpy as np
+
+FLOW_PACKET_COUNT = 4
+
+
+def packet_start_positions(packet_count=FLOW_PACKET_COUNT, packet_size=80):
+    return [1 + i * (packet_size + 1) for i in range(packet_count)]
+
+
+def sep_positions(packet_count=FLOW_PACKET_COUNT, packet_size=80):
+    return [start + packet_size for start in packet_start_positions(packet_count, packet_size)]
+
+
+def required_flow_seq_length(packet_count=FLOW_PACKET_COUNT, packet_size=80):
+    return 1 + packet_count * (packet_size + 1)
+
+
+def build_flow_sequence(packet_ids_list, cls_id, sep_id, pad_id, seq_length, packet_count=FLOW_PACKET_COUNT, packet_size=80):
+    src = [cls_id]
+    seg = [1]
+
+    for packet_idx in range(packet_count):
+        packet_ids = packet_ids_list[packet_idx] if packet_idx < len(packet_ids_list) else []
+        packet_ids = packet_ids[:packet_size] + [pad_id] * max(0, packet_size - len(packet_ids))
+        src.extend(packet_ids[:packet_size])
+        seg.extend([1] * packet_size)
+        src.append(sep_id)
+        seg.append(1)
+
+    if len(src) > seq_length:
+        src = src[:seq_length]
+        seg = seg[:seq_length]
+    while len(src) < seq_length:
+        src.append(pad_id)
+        seg.append(0)
+
+    return src, seg
 
 
 class HeaderAttentionLayer(nn.Module):
@@ -500,6 +536,7 @@ class TwoLevelAttentionEncoder(nn.Module):
         self.header_size = getattr(args, 'header_size', 40)
         self.payload_size = self.packet_size - self.header_size
         self.window_size = getattr(args, 'window_size', 20)
+        self.packet_count = FLOW_PACKET_COUNT
 
         # 第1-4层: 包级注意力堆栈（使用PacketAttentionStack）
         self.packet_attention_stack = PacketAttentionStack(
@@ -541,12 +578,12 @@ class TwoLevelAttentionEncoder(nn.Module):
         batch_size = hidden_states.size(0)
         seq_len = hidden_states.size(1)
 
-        # 提取4个数据包的表示
+        # 提取4个数据包的表示，协议：[CLS] + packet(80) + [SEP] * 4 + padding
         all_packet_hiddens = []
-        packet_start_positions = [1, 82, 163, 244]  # [CLS]后，第1、2、3个[SEP]后
+        packet_starts = packet_start_positions(self.packet_count, self.packet_size)
 
-        for i in range(4):
-            start_pos = packet_start_positions[i]
+        for i in range(self.packet_count):
+            start_pos = packet_starts[i]
             end_pos = min(start_pos + self.packet_size, seq_len)
 
             packet_hidden = hidden_states[:, start_pos:end_pos, :]
@@ -564,7 +601,7 @@ class TwoLevelAttentionEncoder(nn.Module):
 
         # 第1-4层: 应用4层包级注意力堆栈
         packet_outputs = []
-        for i in range(4):
+        for i in range(self.packet_count):
             packet_output = self.packet_attention_stack(all_packet_hiddens[i])
             packet_outputs.append(packet_output)
 
@@ -596,7 +633,7 @@ class TwoLevelAttentionEncoder(nn.Module):
 
             # 重新组合为packet格式用于下一层
             pooled_packets = []
-            for i in range(4):
+            for i in range(self.packet_count):
                 packet_output = torch.cat([output_headers[i], output_payloads[i]], dim=1)
                 pooled_packets.append(packet_output)
 
@@ -605,19 +642,18 @@ class TwoLevelAttentionEncoder(nn.Module):
         # 重新组合所有数据包
         packet_outputs = pooled_packets
 
-        # 保留[CLS] token和[SEP] tokens
+        # 保留[CLS] token和每个packet之后的[SEP] token
         cls_output = hidden_states[:, 0:1, :]
-        sep_outputs = [
-            hidden_states[:, 81:82, :],
-            hidden_states[:, 162:163, :],
-            hidden_states[:, 243:244, :],
-        ]
+        sep_outputs = []
+        for sep_pos in sep_positions(self.packet_count, self.packet_size):
+            if sep_pos < seq_len:
+                sep_outputs.append(hidden_states[:, sep_pos:sep_pos + 1, :])
+            else:
+                sep_outputs.append(torch.zeros(batch_size, 1, hidden_states.size(2), dtype=hidden_states.dtype, device=hidden_states.device))
 
-        # 拼接: [CLS] + packet1 + [SEP] + packet2 + [SEP] + packet3 + [SEP] + packet4
-        output_parts = [cls_output, packet_outputs[0], sep_outputs[0],
-                       packet_outputs[1], sep_outputs[1],
-                       packet_outputs[2], sep_outputs[2],
-                       packet_outputs[3]]
+        output_parts = [cls_output]
+        for packet_output, sep_output in zip(packet_outputs, sep_outputs):
+            output_parts.extend([packet_output, sep_output])
 
         output = torch.cat(output_parts, dim=1)
 
@@ -881,9 +917,8 @@ def read_dataset(args, path):
     
     输入结构: 
     - src: [CLS] + packet1(80) + [SEP] + packet2(80) + [SEP] + packet3(80) + [SEP] + packet4(80)
-    - seg: [1] + [1]*80 + [1] + [2]*80 + [2] + [3]*80 + [3] + [4]*80
-           (使用数据包序号1,2,3,4标记不同数据包)
-    总长度: 1 + 80 + 1 + 80 + 1 + 80 + 1 + 80 = 324，截断到seq_length(320)
+    - seg: 所有有效位置均为1，padding为0
+    总长度: 1 + 4 * (80 + 1) = 325，padding到seq_length(>=325)
     """
     dataset = []
     
@@ -937,26 +972,10 @@ def read_dataset(args, path):
                     packet_ids.append(token_id)
                 all_packet_ids.append(packet_ids)
             
-            # 构建输入序列: [CLS] + packet1 + [SEP] + packet2 + [SEP] + packet3 + [SEP] + packet4
-            src = [cls_id]
-            seg = [1]  # [CLS] token标记为1
-            
-            # 为每个数据包构建序列和segment（所有数据包都使用segment 1）
-            for packet_idx, packet_ids in enumerate(all_packet_ids):
-                src.extend(packet_ids)
-                seg.extend([1] * len(packet_ids))  # 所有数据包tokens标记为1
-                src.append(sep_id)
-                seg.append(1)  # [SEP] token也标记为1
-            
-            # 截断到seq_length (324 -> 320)
-            if len(src) > args.seq_length:
-                src = src[: args.seq_length]
-                seg = seg[: args.seq_length]
-            
-            # 填充到seq_length（如果需要）
-            while len(src) < args.seq_length:
-                src.append(0)
-                seg.append(0)
+            src, seg = build_flow_sequence(
+                all_packet_ids, cls_id, sep_id, 0, args.seq_length,
+                packet_count=FLOW_PACKET_COUNT, packet_size=args.packet_size
+            )
             
             # 添加到数据集
             dataset.append((src, label_id, seg))
@@ -996,18 +1015,20 @@ def read_dataset(args, path):
                         text_c = line[columns["text_c"]]  # packet3
                         text_d = line[columns["text_d"]]  # packet4
                         
-                        # 构建4个数据包的输入: [CLS] + p1 + [SEP] + p2 + [SEP] + p3 + [SEP] + p4
-                        src = [args.tokenizer.vocab.get(CLS_TOKEN, 2)]
-                        seg = [1]  # [CLS] token标记为1
-                        
-                        # 所有数据包都使用segment 1
-                        for packet_idx, text in enumerate([text_a, text_b, text_c, text_d]):
+                        packet_ids_list = []
+                        for text in [text_a, text_b, text_c, text_d]:
                             tokens = args.tokenizer.tokenize(text)
                             token_ids = args.tokenizer.convert_tokens_to_ids(tokens)
-                            src.extend(token_ids)
-                            seg.extend([1] * len(token_ids))  # 所有数据包tokens标记为1
-                            src.append(args.tokenizer.vocab.get(SEP_TOKEN, 3))
-                            seg.append(1)  # [SEP] token也标记为1
+                            packet_ids_list.append(token_ids)
+                        src, seg = build_flow_sequence(
+                            packet_ids_list,
+                            args.tokenizer.vocab.get(CLS_TOKEN, 2),
+                            args.tokenizer.vocab.get(SEP_TOKEN, 3),
+                            0,
+                            args.seq_length,
+                            packet_count=FLOW_PACKET_COUNT,
+                            packet_size=args.packet_size
+                        )
                     else:
                         # 旧格式：只有2个数据包（向后兼容）
                         src_a = args.tokenizer.convert_tokens_to_ids(
@@ -1515,6 +1536,13 @@ def main():
     # 构建tokenizer
     args.tokenizer = str2tokenizer[args.tokenizer](args)
 
+    required_seq_length = required_flow_seq_length(FLOW_PACKET_COUNT, args.packet_size)
+    if args.seq_length < required_seq_length:
+        raise ValueError(
+            f"seq_length={args.seq_length}会截断显式包边界协议；"
+            f"4包输入至少需要{required_seq_length}=1+4*({args.packet_size}+1)。"
+        )
+
     # 构建分类模型
     model = Classifier(args)
 
@@ -1549,7 +1577,7 @@ def main():
     print(f"  src: [CLS] + packet1(80) + [SEP] + packet2(80) + [SEP] + packet3(80) + [SEP] + packet4(80)")
     print(f"  seg: 所有位置都使用 segment 1")
     print(f"       ([CLS], packet1, [SEP], packet2, [SEP], packet3, [SEP], packet4 全部标记为1)")
-    print(f"Input length: 1 + 80 + 1 + 80 + 1 + 80 + 1 + 80 = 324 tokens (truncated to {args.seq_length})")
+    print(f"Input length: 1 + 4 * (80 + 1) = 325 tokens (padded to {args.seq_length})")
     print(f"Sequence length: {args.seq_length}")
     print(f"Batch size: {batch_size}")
     print(f"Training instances: {instances_num}")

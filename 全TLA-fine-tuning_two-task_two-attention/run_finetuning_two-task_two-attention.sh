@@ -38,7 +38,7 @@ VOCAB_PATH="/root/datasets_new/pt_packet_datasets_随机化/vocab.txt"
 EPOCHS_NUM=50
 BATCH_SIZE=32
 LEARNING_RATE=2e-5
-SEQ_LENGTH=320  # 4个数据包格式: [CLS] + p1(80) + [SEP] + p2(80) + [SEP] + p3(80) + [SEP] + p4(80)
+SEQ_LENGTH=325  # 4个数据包显式分隔: [CLS] + p1(80) + [SEP] + ... + p4(80) + [SEP]
 
 # 数据集配置（.pt格式数据集基础路径，不含_train.pt等后缀）
 # 脚本会自动查找 _train.pt, _dev.pt, _test.pt 三个文件
@@ -409,7 +409,7 @@ CONFIG_PATH="/root/全TLA_Mine/models/bert/base_config.json"
 EPOCHS_NUM=50
 BATCH_SIZE=32
 LEARNING_RATE=2e-5
-SEQ_LENGTH=320
+SEQ_LENGTH=325
 
 # 训练单个数据集的函数
 train_dataset() {

@@ -6,7 +6,7 @@
 1. NSP_Indicating (Packet Masking) - 50%
    - 使用流级别Packet Masking策略（h-h-h-h-h和p-p-p-p-p关系版本）
    - 输入: 流MFR矩阵（前4个数据包，每个80 tokens）
-   - Sequence Length: 330 tokens
+   - Sequence Length: 325 tokens
    - 两种操作，随机选择：
      - 操作1（h-h-h-h-h关系）：将流的四个数据包MFR矩阵的payload都设置为CNS，随机mask某一个数据包MFR矩阵的header，mask率90%
      - 操作2（p-p-p-p-p关系）：将流的四个数据包MFR矩阵的header都设置为CNS，随机mask某一个数据包MFR矩阵的payload，mask率90%
@@ -14,8 +14,8 @@
 2. MFR-Masking (Header/Payload Masking) - 50%
    - 对每条流，从4个数据包MFR矩阵中随机选择1个数据包进行处理
    - 每个数据包：80 tokens（Header 40 + Payload 40）
-   - 数据包独立处理，不组合成流
-   - Sequence Length: 82 tokens (CLS + 80 + SEP)，padding到330以匹配NSP_Indicating
+   - 单个目标数据包mask后放入4包显式边界槽位，其它包位用PAD占位
+   - Sequence Length: 325 tokens (CLS + 4 * (80 + SEP))
    - 三种关系masking策略（按batch_size内的流划分）：
      - h-h关系 (30%)：Payload用[CNS]替代，对Header随机mask 80%
      - p-p关系 (30%)：Header用[CNS]替代，对Payload随机mask 80%
@@ -71,6 +71,60 @@ from uer.targets import str2target
 from uer.trainer import str2trainer, BertTrainer
 from uer.layers import str2embedding
 from uer.encoders import str2encoder
+
+FLOW_PACKET_COUNT = 4
+
+
+def packet_start_positions(packet_count=FLOW_PACKET_COUNT, packet_size=80):
+    return [1 + i * (packet_size + 1) for i in range(packet_count)]
+
+
+def sep_positions(packet_count=FLOW_PACKET_COUNT, packet_size=80):
+    return [start + packet_size for start in packet_start_positions(packet_count, packet_size)]
+
+
+def required_flow_seq_length(packet_count=FLOW_PACKET_COUNT, packet_size=80):
+    return 1 + packet_count * (packet_size + 1)
+
+
+def build_flow_sequence(packets, cls_id, sep_id, pad_id, seq_length, packet_count=FLOW_PACKET_COUNT, packet_size=80):
+    src = [cls_id]
+    seg = [1]
+
+    for packet_idx in range(packet_count):
+        packet = packets[packet_idx] if packet_idx < len(packets) else []
+        packet = packet[:packet_size] + [pad_id] * max(0, packet_size - len(packet))
+        src.extend(packet[:packet_size])
+        seg.extend([1] * packet_size)
+        src.append(sep_id)
+        seg.append(1)
+
+    if len(src) > seq_length:
+        src = src[:seq_length]
+        seg = seg[:seq_length]
+    while len(src) < seq_length:
+        src.append(pad_id)
+        seg.append(0)
+
+    return src, seg
+
+
+def build_flow_labels(packet_labels, seq_length, packet_count=FLOW_PACKET_COUNT, packet_size=80):
+    labels = [-1]
+
+    for packet_idx in range(packet_count):
+        packet = packet_labels[packet_idx] if packet_idx < len(packet_labels) else []
+        packet = packet[:packet_size] + [-1] * max(0, packet_size - len(packet))
+        labels.extend(packet[:packet_size])
+        labels.append(-1)
+
+    if len(labels) > seq_length:
+        labels = labels[:seq_length]
+    while len(labels) < seq_length:
+        labels.append(-1)
+
+    return labels
+
 
 # 导入masking函数
 # 添加路径以导入packet_masking和mfr_masking模块
@@ -590,7 +644,7 @@ class BaseModel(nn.Module):
         前向传播：embedding → 4层PacketAttention → 池化 → 8层FlowAttention
 
         Args:
-            src: [batch_size, seq_length] 输入序列（330 tokens）
+            src: [batch_size, seq_length] 输入序列（325 tokens）
             seg: [batch_size, seq_length] segment标记
 
         Returns:
@@ -599,27 +653,26 @@ class BaseModel(nn.Module):
         # Embedding
         emb = self.embedding(src, seg)  # [batch_size, seq_length, hidden_size]
 
-        # 将序列分解为4个数据包（每个80 tokens）
-        # 假设seq_length = 330 = 1(CLS) + 320(4*80) + 1(SEP) + padding
-        # 实际处理的是320个tokens（4个数据包）
+        # 将序列分解为4个数据包（每个80 tokens），输入协议：
+        # [CLS] + packet1(80) + [SEP] + ... + packet4(80) + [SEP] + padding
         batch_size, seq_length, hidden_size = emb.size()
 
-        # 提取4个数据包的embedding（跳过CLS token）
-        # 假设结构：[CLS] + packet1(80) + packet2(80) + packet3(80) + packet4(80) + [SEP] + padding
+        starts = packet_start_positions(FLOW_PACKET_COUNT, self.packet_size)
+        seps = sep_positions(FLOW_PACKET_COUNT, self.packet_size)
+
         packet_embeddings = []
-        for i in range(4):
-            start_idx = 1 + i * 80  # 跳过CLS
-            end_idx = start_idx + 80
+        for start_idx in starts:
+            end_idx = start_idx + self.packet_size
 
             # 确保不超出序列长度
             if end_idx > seq_length:
                 end_idx = seq_length
 
-            packet_emb = emb[:, start_idx:end_idx, :]  # [batch_size, <=80, hidden_size]
+            packet_emb = emb[:, start_idx:end_idx, :]  # [batch_size, <=packet_size, hidden_size]
 
-            # 如果packet大小不足80，进行padding
-            if packet_emb.size(1) < 80:
-                padding = torch.zeros(batch_size, 80 - packet_emb.size(1), hidden_size, device=emb.device)
+            # 如果packet大小不足packet_size，进行padding
+            if packet_emb.size(1) < self.packet_size:
+                padding = torch.zeros(batch_size, self.packet_size - packet_emb.size(1), hidden_size, device=emb.device)
                 packet_emb = torch.cat([packet_emb, padding], dim=1)
 
             packet_embeddings.append(packet_emb)
@@ -636,10 +689,14 @@ class BaseModel(nn.Module):
         # 8层FlowAttention处理流级依赖
         flow_headers, flow_payloads = self.flow_attention_stack(pooled_packets)  # list of 4 tensors each
 
-        # 拼接所有输出
-        # 重新组织为完整的序列：[CLS] + packet1 + packet2 + packet3 + packet4 + [SEP] + padding
+        # 拼接所有输出，保持显式包边界协议
         cls_token = emb[:, 0:1, :]  # [batch_size, 1, hidden_size]
-        sep_token = emb[:, 321:322, :]  # [batch_size, 1, hidden_size] (假设SEP在321位置)
+        sep_tokens = []
+        for sep_idx in seps:
+            if sep_idx < seq_length:
+                sep_tokens.append(emb[:, sep_idx:sep_idx + 1, :])
+            else:
+                sep_tokens.append(torch.zeros(batch_size, 1, hidden_size, device=emb.device, dtype=emb.dtype))
 
         # 拼接header和payload
         all_packets = []
@@ -647,11 +704,10 @@ class BaseModel(nn.Module):
             packet = torch.cat([header, payload], dim=1)  # [batch_size, 80, hidden_size]
             all_packets.append(packet)
 
-        # 拼接所有数据包
-        packets_concat = torch.cat(all_packets, dim=1)  # [batch_size, 320, hidden_size]
-
-        # 最终输出：[CLS] + packets + [SEP] + padding
-        output = torch.cat([cls_token, packets_concat, sep_token], dim=1)  # [batch_size, 322, hidden_size]
+        output_parts = [cls_token]
+        for packet, sep_token in zip(all_packets, sep_tokens):
+            output_parts.extend([packet, sep_token])
+        output = torch.cat(output_parts, dim=1)
 
         # 填充到原始长度
         if output.size(1) < seq_length:
@@ -780,8 +836,8 @@ class MultiTaskDataset(Dataset):
     输入数据格式：
     - 原始数据：流MFR矩阵（前5个数据包，每个160 tokens）
     - 处理后：流MFR矩阵（前4个数据包，每个80 tokens）
-    - NSP_Indicating: 使用流级别Packet Masking策略（h-h-h-h-h和p-p-p-p-p关系版本），Sequence Length: 330
-    - MFR-Masking: 每个数据包独立处理，三种关系masking策略（h-h, p-p, h-p），Sequence Length: 82
+    - NSP_Indicating: 使用流级别Packet Masking策略（h-h-h-h-h和p-p-p-p-p关系版本），Sequence Length: 325
+    - MFR-Masking: 单个目标数据包mask后放入4包显式边界槽位，Sequence Length: 325
     """
     def __init__(self, args, dataset_path, batch_size, proc_id, proc_num, shuffle=True):
         self.args = args
@@ -793,6 +849,13 @@ class MultiTaskDataset(Dataset):
         
         self.seq_length = args.seq_length
         self.tokens_per_packet = args.tokens_per_packet
+        self.packet_count = FLOW_PACKET_COUNT
+        required_seq_length = required_flow_seq_length(self.packet_count, self.tokens_per_packet)
+        if self.seq_length < required_seq_length:
+            raise ValueError(
+                f"seq_length={self.seq_length}会截断显式包边界协议；"
+                f"4包输入至少需要{required_seq_length}=1+4*({self.tokens_per_packet}+1)。"
+            )
         
         # 任务权重（用于采样）
         self.task_weights = [
@@ -979,7 +1042,7 @@ class MultiTaskDataset(Dataset):
                         flow.extend(packet_tokens[:80])
                     
                     # 确保最终长度为320 tokens (4 packets × 80 tokens)
-                    expected_len = self.tokens_per_packet * 4  # 320
+                    expected_len = self.tokens_per_packet * self.packet_count  # 320
                     if len(flow) < expected_len:
                         flow = flow + [self.pad_id] * (expected_len - len(flow))
                     elif len(flow) > expected_len:
@@ -1078,7 +1141,7 @@ class MultiTaskDataset(Dataset):
             labels: 原始tokens（用于计算loss，-1表示不需要预测）
         """
         # 确保tokens长度正确
-        expected_len = self.tokens_per_packet * 4  # 320
+        expected_len = self.tokens_per_packet * self.packet_count  # 320
         if len(tokens) < expected_len:
             tokens = tokens + [self.pad_id] * (expected_len - len(tokens))
         elif len(tokens) > expected_len:
@@ -1098,7 +1161,7 @@ class MultiTaskDataset(Dataset):
         if use_hhhh_relation:
             # 操作1：h-h-h-h-h关系
             # 1. 将四个数据包的payload都设置为CNS
-            for packet_idx in range(4):
+            for packet_idx in range(self.packet_count):
                 packet_start = packet_idx * self.tokens_per_packet
                 payload_start = packet_start + header_size
                 payload_end = packet_start + self.tokens_per_packet
@@ -1109,7 +1172,7 @@ class MultiTaskDataset(Dataset):
                         labels[i] = -1  # CNS不需要预测
             
             # 2. 随机选择某一个数据包的header进行mask（mask率90%）
-            selected_packet_idx = random.randint(0, 3)
+            selected_packet_idx = random.randint(0, self.packet_count - 1)
             packet_start = selected_packet_idx * self.tokens_per_packet
             header_start = packet_start
             header_end = packet_start + header_size
@@ -1138,7 +1201,7 @@ class MultiTaskDataset(Dataset):
         else:
             # 操作2：p-p-p-p-p关系
             # 1. 将四个数据包的header都设置为CNS
-            for packet_idx in range(4):
+            for packet_idx in range(self.packet_count):
                 packet_start = packet_idx * self.tokens_per_packet
                 header_start = packet_start
                 header_end = packet_start + header_size
@@ -1149,7 +1212,7 @@ class MultiTaskDataset(Dataset):
                         labels[i] = -1  # CNS不需要预测
             
             # 2. 随机选择某一个数据包的payload进行mask（mask率90%）
-            selected_packet_idx = random.randint(0, 3)
+            selected_packet_idx = random.randint(0, self.packet_count - 1)
             packet_start = selected_packet_idx * self.tokens_per_packet
             payload_start = packet_start + header_size
             payload_end = packet_start + self.tokens_per_packet
@@ -1181,7 +1244,7 @@ class MultiTaskDataset(Dataset):
     def _apply_mfr_masking_single_packet(self, packet_tokens, relation_type):
         """
         应用MFR Masking策略（MFR-Masking任务）- 单个数据包版本
-        每个数据包独立处理，不组合成流
+        单个目标数据包独立mask后放入4包显式边界槽位
         
         三种关系masking策略：
         1. h-h关系：Payload用[CNS]替代，对Header随机mask 80%
@@ -1306,7 +1369,7 @@ class MultiTaskDataset(Dataset):
             tgt_mlm: MLM标签
         """
         # 确保flow长度正确
-        expected_len = self.tokens_per_packet * 4  # 320
+        expected_len = self.tokens_per_packet * self.packet_count  # 320
         if len(flow) < expected_len:
             flow = flow + [self.pad_id] * (expected_len - len(flow))
         elif len(flow) > expected_len:
@@ -1315,20 +1378,22 @@ class MultiTaskDataset(Dataset):
         # 应用Packet Masking
         masked_tokens, labels = self._apply_packet_masking(flow)
         
-        # 构建输入：[CLS] + masked_tokens
-        src = [self.cls_id] + masked_tokens
-        seg = [0] * len(src)
-        tgt_mlm = [-1] + labels  # 对应地添加CLS的标签
-        
-        # 截断或填充到seq_length
-        if len(src) > self.seq_length:
-            src = src[:self.seq_length]
-            seg = seg[:self.seq_length]
-            tgt_mlm = tgt_mlm[:self.seq_length]
-        while len(src) < self.seq_length:
-            src.append(self.pad_id)
-            seg.append(0)
-            tgt_mlm.append(-1)
+        packets = [
+            masked_tokens[i * self.tokens_per_packet:(i + 1) * self.tokens_per_packet]
+            for i in range(self.packet_count)
+        ]
+        label_packets = [
+            labels[i * self.tokens_per_packet:(i + 1) * self.tokens_per_packet]
+            for i in range(self.packet_count)
+        ]
+        src, seg = build_flow_sequence(
+            packets, self.cls_id, self.sep_id, self.pad_id, self.seq_length,
+            packet_count=self.packet_count, packet_size=self.tokens_per_packet
+        )
+        tgt_mlm = build_flow_labels(
+            label_packets, self.seq_length,
+            packet_count=self.packet_count, packet_size=self.tokens_per_packet
+        )
         
         return src, seg, tgt_mlm
     
@@ -1348,7 +1413,7 @@ class MultiTaskDataset(Dataset):
             tgt_mlm: MLM标签
         """
         # 确保flow长度正确
-        expected_len = self.tokens_per_packet * 4  # 320
+        expected_len = self.tokens_per_packet * self.packet_count  # 320
         if len(flow) < expected_len:
             flow = flow + [self.pad_id] * (expected_len - len(flow))
         elif len(flow) > expected_len:
@@ -1362,22 +1427,19 @@ class MultiTaskDataset(Dataset):
         # 应用MFR Masking（单个数据包）
         masked_tokens, labels = self._apply_mfr_masking_single_packet(packet_tokens, relation_type)
         
-        # 构建输入：[CLS] + masked_tokens + [SEP]
-        # 注意：为了在同一个batch中处理，MFR-Masking样本也需要padding到seq_length（330）
-        # 虽然每个数据包只有82 tokens（CLS + 80 + SEP），但需要padding到330以匹配NSP_Indicating
-        src = [self.cls_id] + masked_tokens + [self.sep_id]
-        seg = [0] * len(src)
-        tgt_mlm = [-1] + labels + [-1]  # CLS和SEP不需要预测
-        
-        # 截断或填充到seq_length（330，与NSP_Indicating保持一致）
-        if len(src) > self.seq_length:
-            src = src[:self.seq_length]
-            seg = seg[:self.seq_length]
-            tgt_mlm = tgt_mlm[:self.seq_length]
-        while len(src) < self.seq_length:
-            src.append(self.pad_id)
-            seg.append(0)
-            tgt_mlm.append(-1)
+        packets = [[self.pad_id] * self.tokens_per_packet for _ in range(self.packet_count)]
+        label_packets = [[-1] * self.tokens_per_packet for _ in range(self.packet_count)]
+        packets[packet_idx] = masked_tokens
+        label_packets[packet_idx] = labels
+
+        src, seg = build_flow_sequence(
+            packets, self.cls_id, self.sep_id, self.pad_id, self.seq_length,
+            packet_count=self.packet_count, packet_size=self.tokens_per_packet
+        )
+        tgt_mlm = build_flow_labels(
+            label_packets, self.seq_length,
+            packet_count=self.packet_count, packet_size=self.tokens_per_packet
+        )
         
         return src, seg, tgt_mlm
     

@@ -653,18 +653,24 @@ loss = nsp_indicating_weight * loss_nsp + mfr_masking_weight * loss_mfr
 1. **修复 `.pt` 数据生成阶段的数据包规整错误**  
    在 `prepare_dataset_pretrain.py` 和 `NSP_Indicating_Fine-Tuning_Dataset_Generating.p`'中，将原始 `8×100 tokens` 的 flow MFR 矩阵正确重排为独立数据包序列。每个数据包应为 `80 tokens = Header 40 + Payload 40`，避免当前 320 序列中 header/payload 混杂、包边界错乱的问题。
 2. **统一预训练输入格式与微调流程的包边界协议**  
-   明确并实现预训练输入格式，例如使用显式分隔：
+   明确并实现预训练和微调输入格式，例如使用显式分隔：
+
    ```text
    [CLS] + packet1(80) + [SEP] + packet2(80) + ... + packetN(80) + [SEP] + padding
    ```
+
    同步修改数据加载、masking、标签对齐、模型切片逻辑，确保 token、label、segment 与包边界一致。
+
+   注意，预训练和微调的架构都要修改，避免流内数据包或数据包内序列内头部与载荷内容混杂、**排布错乱**的问题
 3. **将模型架构从 4 个数据包扩展为 5 个数据包**  
    将 Packet/Flow 相关逻辑从固定 4 包改为支持 5 包：
+
    - 输入 `5 × 80 tokens`
    - `seq_length = 410`
    - FlowAttention 滑动窗口支持 5 个 packet
    - NSP_Indicating 和 MFR-Masking 都按 5 包生成样本
    - 清理所有硬编码的 `4`、`320`、`321` 等位置常量。
+   - 注意，预训练和微调的架构都要修改
 
 
 **我建议先完成任务 1，再做任务 2。**

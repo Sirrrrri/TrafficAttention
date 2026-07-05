@@ -11,7 +11,7 @@
    - 使用流级别Packet Masking策略（h-h-h-h-h和p-p-p-p-p关系版本）
    - 预训练任务: MLM (仅Masked Language Model)
    - 输入: 流MFR矩阵（前4个数据包，每个80 tokens）
-   - Sequence Length: 330 tokens (包含CLS、SEP、padding)
+   - Sequence Length: 325 tokens (包含CLS、SEP、padding)
    - 每个流产生1个样本
    - 两种操作，随机选择：
      - 操作1（h-h-h-h-h关系）：将流的四个数据包MFR矩阵的payload都设置为CNS，随机mask某一个数据包MFR矩阵的header，mask率90%
@@ -20,8 +20,8 @@
 2. MFR-Masking (Header/Payload Masking) - 50%
    - 对每条流，对前4个数据包MFR矩阵分别进行处理
    - 每个数据包：80 tokens（Header 40 + Payload 40）
-   - 数据包独立处理，不组合成流
-   - Sequence Length: 82 tokens (CLS + 80 + SEP)，padding到330以匹配NSP_Indicating
+   - 单个目标数据包mask后放入4包显式边界槽位，其它包位用PAD占位
+   - Sequence Length: 325 tokens (CLS + 4 * (80 + SEP))以匹配NSP_Indicating
    - 每个流产生4个样本（每个数据包1个样本）
    - 三种关系masking策略（按所有数据包划分）：
      - h-h关系 (30%)：Payload用[CNS]替代，对Header随机mask 80%
@@ -186,8 +186,8 @@ def main():
                         help="Max length for span masking.")
     
     # Sequence length option
-    parser.add_argument("--seq_length", type=int, default=330,
-                        help="Sequence length for flow MFR matrix (default: 330 tokens = 4 packets * 80 tokens + CLS + SEP + buffer).")
+    parser.add_argument("--seq_length", type=int, default=325,
+                        help="Sequence length for flow MFR matrix (default: 325 tokens = CLS + 4 * (80 tokens + SEP)).")
     
     # NSP_Indicating任务参数（Packet Masking）
     parser.add_argument("--nsp_indicating_weight", type=float, default=0.50,
@@ -377,7 +377,7 @@ def main():
     print(f"  1. NSP_Indicating (Packet Masking): {args.nsp_indicating_weight*100:.0f}%")
     print(f"     - 使用流级别Packet Masking策略（h-h-h-h-h和p-p-p-p-p关系版本）")
     print(f"     - 输入: 流MFR矩阵（前4个数据包，每个80 tokens）")
-    print(f"     - Sequence Length: 330 tokens")
+    print(f"     - Sequence Length: 325 tokens")
     print(f"     - 两种操作，随机选择：")
     print(f"       * 操作1（h-h-h-h-h关系）：payload设置为CNS，随机mask一个header（90%）")
     print(f"       * 操作2（p-p-p-p-p关系）：header设置为CNS，随机mask一个payload（90%）")
@@ -385,8 +385,8 @@ def main():
     print(f"  2. MFR-Masking (Header/Payload Masking): {args.mfr_masking_weight*100:.0f}%")
     print(f"     - 对每条流，对前4个数据包MFR矩阵分别进行处理")
     print(f"     - 每个数据包：80 tokens（Header 40 + Payload 40）")
-    print(f"     - 每个数据包独立处理，不组合成流")
-    print(f"     - Sequence Length: 82 tokens (CLS + 80 + SEP)，padding到330")
+    print(f"     - 单个目标数据包mask后放入4包显式边界槽位，其它包位用PAD占位")
+    print(f"     - Sequence Length: 325 tokens (CLS + 4 * (80 + SEP))")
     print(f"     - 每个流产生4个样本（每个数据包1个样本）")
     print(f"     - 三种关系masking策略（按所有数据包划分）：")
     print(f"       * h-h关系 (30%)：Payload用[CNS]替代，对Header随机mask 80%")
