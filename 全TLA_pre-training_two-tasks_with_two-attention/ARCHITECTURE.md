@@ -585,3 +585,94 @@ loss = nsp_indicating_weight * loss_nsp + mfr_masking_weight * loss_mfr
 ## 总结
 
 新架构通过显式建模网络流量的包级和流级结构，提供了一个更加专业化和高效的预训练框架。相比标准的Transformer，它在保持参数量相近的情况下，能够更好地捕捉网络流量数据的特殊特征。
+
+
+
+**现有架构细化**
+
+当前目录的预训练主流程是：
+
+`two-task_with_two-attention_pretrain.py` 负责解析参数和启动训练，默认 `--seq_length=330`，但运行脚本实际传入 `SEQ_LENGTH=320`。所以文档里的 330 和实际训练脚本里的 320 已经不一致。
+
+核心实现都在 [multi_task_trainer.py](/home/user/paper/TrafficAttention/全TLA_pre-training_two-tasks_with_two-attention/multi_task_trainer.py:768)：
+
+1. 数据读取  
+   `MultiTaskDataset` 从 pickle `.pt` 文件流式读取样本。它支持两类输入：
+   - 已经是流矩阵的 list/tuple；
+   - 原始包格式 `(flow_id, packet_idx, packet_tokens, dataset_name)`。
+
+2. 数据组织  
+   当前代码假设原始流数据是 `5 个包 × 每包 160 tokens = 800 tokens`，然后用：
+   - 第 1 包：`raw_flow[0:80]`
+   - 第 2 包：`raw_flow[160:240]`
+   - 第 3 包：`raw_flow[320:400]`
+   - 第 4 包：`raw_flow[480:560]`
+
+   这在 [multi_task_trainer.py](/home/user/paper/TrafficAttention/全TLA_pre-training_two-tasks_with_two-attention/multi_task_trainer.py:969) 附近实现。
+
+3. 但真实 MFR 预处理不是这种布局  
+   预处理函数 [data_process.py](/home/user/paper/TrafficAttention/data_process/MFR%20Generating/for_pre-training/data_process.py:163) 生成的是 `8 行 × 100 tokens` 的流矩阵：
+   - 前 2 行：5 个包的 header 横向拼接；
+   - 后 6 行：5 个包的 payload 横向拼接；
+   - 每行中每个包占 20 tokens。
+
+   因此一个完整包的 80 tokens 应该从 8 行里按同一个包列块抽取：`2 行 header × 20 = 40`，再取 payload 的前 `2 行 × 20 = 40`。当前按连续 160 取前 80，确实会导致头部与载荷、包与包混杂。
+
+4. 样本构造  
+   NSP_Indicating 任务：每条流生成 1 个样本，当前只构造 `[CLS] + 320 tokens`，没有追加 `[SEP]`，见 [multi_task_trainer.py](/home/user/paper/TrafficAttention/全TLA_pre-training_two-tasks_with_two-attention/multi_task_trainer.py:1318)。  
+   MFR-Masking 任务：每条流的 4 个包分别生成样本，即每流 4 个 MFR 样本，格式是 `[CLS] + packet(80) + [SEP] + padding`，见 [multi_task_trainer.py](/home/user/paper/TrafficAttention/全TLA_pre-training_two-tasks_with_two-attention/multi_task_trainer.py:1365)。
+
+5. 模型编码  
+   `BaseModel` 做：
+   - embedding；
+   - 从位置 1 开始，每 80 token 切一个包，固定切 4 个包；
+   - 每个包进入 `PacketAttentionStack`；
+   - payload pooling；
+   - 进入 8 层 `FlowAttentionStack`；
+   - 拼回 `[CLS] + 4*packet + [SEP] + padding`。
+
+   关键硬编码：
+   - `for i in range(4)`：固定 4 包；
+   - `start_idx = 1 + i * 80`：默认包之间没有 `[SEP]`；
+   - `sep_token = emb[:, 321:322, :]`：硬编码 SEP 在 321，但实际运行 `seq_length=320` 时这个 slice 为空；
+   - `FlowAttention.forward()` 也固定按 4 包写窗口逻辑。
+
+6. 两级注意力  
+   包级注意力对每个 80-token 包分为：
+   - header：前 40 token；
+   - payload：后 40 token；
+   - 4 组串行 `h-h -> h-p -> p-p`，共 12 个子层。
+
+   流级注意力对 4 个包做滑动窗口跨包建模：
+   - 包 1 看包 1/2；
+   - 包 2 看包 1/2/3；
+   - 包 3 看包 2/3/4；
+   - 包 4 看包 3/4。
+
+3个任务：
+1. **修复 `.pt` 数据生成阶段的数据包规整错误**  
+   在 `prepare_dataset_pretrain.py` 和 `NSP_Indicating_Fine-Tuning_Dataset_Generating.p`'中，将原始 `8×100 tokens` 的 flow MFR 矩阵正确重排为独立数据包序列。每个数据包应为 `80 tokens = Header 40 + Payload 40`，避免当前 320 序列中 header/payload 混杂、包边界错乱的问题。
+2. **统一预训练输入格式与微调流程的包边界协议**  
+   明确并实现预训练输入格式，例如使用显式分隔：
+   ```text
+   [CLS] + packet1(80) + [SEP] + packet2(80) + ... + packetN(80) + [SEP] + padding
+   ```
+   同步修改数据加载、masking、标签对齐、模型切片逻辑，确保 token、label、segment 与包边界一致。
+3. **将模型架构从 4 个数据包扩展为 5 个数据包**  
+   将 Packet/Flow 相关逻辑从固定 4 包改为支持 5 包：
+   - 输入 `5 × 80 tokens`
+   - `seq_length = 410`
+   - FlowAttention 滑动窗口支持 5 个 packet
+   - NSP_Indicating 和 MFR-Masking 都按 5 包生成样本
+   - 清理所有硬编码的 `4`、`320`、`321` 等位置常量。
+
+
+**我建议先完成任务 1，再做任务 2。**
+
+原因很明确：任务 1 是数据语义正确性问题，任务 2 是规模扩展问题。当前 320 的错乱根因高度疑似在数据重排逻辑，不先修正，直接扩成 5 包、410 tokens，只会把错误从 `4×80` 扩大到 `5×80`。
+
+建议顺序：
+
+1. 先把 8×100 的 MFR 流矩阵规整转换为真正的 `packet1(80) + packet2(80) + ...`，并加断言/单测验证每包 `header40 + payload40`。
+2. 再统一预训练和微调的输入协议，尤其是包间 `[SEP]` 是否保留。你提出的 5 包 410 tokens 更像是 `[CLS] + 5 * (80 + ?)` 加 padding/特殊位的设计，需要先明确边界协议。
+3. 最后把模型里的 `4`、`320`、`321`、窗口逻辑改成可配置 `num_packets=5`，并把 `seq_length` 改到 410。

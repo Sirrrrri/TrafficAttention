@@ -159,14 +159,56 @@ def extract_category_name(file_path):
     return "Unknown"
 
 
+FLOW_ROWS = 8
+FLOW_TOKENS_PER_ROW = 100
+PACKETS_PER_FLOW = 5
+TOKENS_PER_PACKET_ROW = FLOW_TOKENS_PER_ROW // PACKETS_PER_FLOW
+HEADER_ROWS = 2
+PAYLOAD_ROWS_FOR_MODEL = 2
+PACKET_TOKEN_LENGTH = (HEADER_ROWS + PAYLOAD_ROWS_FOR_MODEL) * TOKENS_PER_PACKET_ROW
+
+
+def split_flow_matrix_to_packet80(flow_tokens_lines):
+    """
+    将8×100 flow MFR矩阵恢复为5个独立packet序列。
+
+    flow_mfr由5个packet横向拼接：
+    - row 0-1: header，每行每包20 tokens，合计40 tokens
+    - row 2-7: payload，每行每包20 tokens；模型输入只取前2行payload，合计40 tokens
+    """
+    if len(flow_tokens_lines) != FLOW_ROWS:
+        return None
+
+    for row_tokens in flow_tokens_lines:
+        if len(row_tokens) != FLOW_TOKENS_PER_ROW:
+            return None
+
+    packet_samples = []
+    for packet_idx in range(PACKETS_PER_FLOW):
+        col_start = packet_idx * TOKENS_PER_PACKET_ROW
+        col_end = col_start + TOKENS_PER_PACKET_ROW
+
+        packet_tokens = []
+        for row_idx in range(HEADER_ROWS):
+            packet_tokens.extend(flow_tokens_lines[row_idx][col_start:col_end])
+        for row_idx in range(HEADER_ROWS, HEADER_ROWS + PAYLOAD_ROWS_FOR_MODEL):
+            packet_tokens.extend(flow_tokens_lines[row_idx][col_start:col_end])
+
+        if len(packet_tokens) != PACKET_TOKEN_LENGTH:
+            return None
+        packet_samples.append(packet_tokens)
+
+    return packet_samples
+
+
 def read_flow_mfr_finetune(txt_file, label_map):
     """
     读取单个"流MFR矩阵.txt"文件，提取前4个数据包（每个80 tokens）和标签（用于微调）
     
     流MFR矩阵格式：
     - 第1行：标签（如"CICIoT2022 Idle"）
-    - 第2-9行：8行×100列的MFR矩阵数据（共800个token）
-    - 提取前4个数据包，每个数据包80个token，共320个token
+    - 第2-9行：8行×100列的MFR矩阵数据（前2行为header，后6行为payload，5个包横向拼接）
+    - 提取前4个数据包，每个数据包80个token（Header 40 + Payload 40），共320个token
     
     参数:
         txt_file: 流MFR矩阵文件路径
@@ -206,32 +248,21 @@ def read_flow_mfr_finetune(txt_file, label_map):
         category_name = extract_category_name(txt_file)
         
         # 读取MFR token数据（从第2行开始，共8行）
-        # 每行100个token，8行共800个token
-        flow_tokens = []
+        # flow_mfr为8×100矩阵：前2行为header，后6行为payload，5个包横向拼接。
+        flow_tokens_lines = []
         for line in lines[1:9]:  # 取8行
             line = line.strip()
             if line:
-                tokens = line.split()
-                flow_tokens.extend(tokens)
+                flow_tokens_lines.append(line.split())
         
-        # 检查是否有800个token
-        if len(flow_tokens) != 800:
+        packet_tokens_list = split_flow_matrix_to_packet80(flow_tokens_lines)
+        if packet_tokens_list is None:
             return None
         
-        # 提取前4个数据包，每个数据包80个token
-        # 原始800个token按照每160个token为一个数据包拆分，取前4个数据包的前80个token
-        # 数据包1: tokens[0:80]
-        # 数据包2: tokens[160:240]
-        # 数据包3: tokens[320:400]
-        # 数据包4: tokens[480:560]
-        packet_tokens = []
-        for i in range(4):  # 前4个数据包
-            start_idx = i * 160  # 每个数据包起始位置
-            end_idx = start_idx + 80  # 每个数据包取80个token
-            packet_tokens.extend(flow_tokens[start_idx:end_idx])
-        
-        # 更新flow_tokens为前4个数据包的320个token
-        flow_tokens = packet_tokens
+        # 提取前4个数据包，每个数据包80个token（Header 40 + Payload 40）。
+        flow_tokens = []
+        for packet_tokens in packet_tokens_list[:4]:
+            flow_tokens.extend(packet_tokens)
         
         # 获取标签ID
         label_id = label_map.get(category_name, -1)  # -1表示未知类别

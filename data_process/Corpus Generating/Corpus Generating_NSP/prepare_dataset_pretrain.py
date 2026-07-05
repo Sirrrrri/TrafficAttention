@@ -4,14 +4,15 @@
 将MFR数据集中的flow_mfr数据转换为dataset_pretrain.pt
 
 功能：
-- 从每个流MFR矩阵（8行×100token，共800个token）中提取5个数据包token序列（每个160个token）
+- 从每个流MFR矩阵（8行×100token，共800个token）中提取5个数据包token序列
+- 每个数据包为80个token：Header 40 + Payload 40
 - 生成dataset_pretrain.pt用于预训练任务
 
 输出数据格式：
 - 每个样本: (flow_id, packet_index, packet_tokens, dataset_name)
   - flow_id: 8位数字字符串，如 "00000123"
   - packet_index: 整数 (1-5)，代表数据包在流中的序号
-  - packet_tokens: 包含160个token的列表，每个token是4位十六进制字符串（2bytes），如 "4500"、"0020" 等
+  - packet_tokens: 包含80个token的列表，每个token是4位十六进制字符串（2bytes），如 "4500"、"0020" 等
   - dataset_name: 数据集名称
 """
 
@@ -22,17 +23,23 @@ import re
 import argparse
 from multiprocessing import Pool
 
+FLOW_ROWS = 8
+FLOW_TOKENS_PER_ROW = 100
+PACKETS_PER_FLOW = 5
+TOKENS_PER_PACKET_ROW = FLOW_TOKENS_PER_ROW // PACKETS_PER_FLOW
+HEADER_ROWS = 2
+PAYLOAD_ROWS_FOR_MODEL = 2
+PACKET_TOKEN_LENGTH = (HEADER_ROWS + PAYLOAD_ROWS_FOR_MODEL) * TOKENS_PER_PACKET_ROW
+
 # ============================================================================
 # 数据集配置
 # ============================================================================
 # 要处理的数据集列表
 # 如果为 None 或空列表，则处理所有数据集
 # 可以指定要处理的数据集名称，例如：
-# DATASETS_TO_PROCESS = ['NonVPN_MFR', 'NonTor_MFR', 'browser_MFR']
 DATASETS_TO_PROCESS = [
-    'CICIoT2022_MFR',
-    'BenignTraffic_MFR',
-    'NonTor_MFR',
+    'IDS_MFR',
+    'browser_MFR',
     'NonVPN_MFR'
 ]
 # 如果不想处理任何数据集（使用命令行参数），设置为 None
@@ -74,6 +81,39 @@ def extract_dataset_name(file_path):
     return "Unknown"
 
 
+def split_flow_matrix_to_packet80(flow_tokens_lines):
+    """
+    将8×100 flow MFR矩阵恢复为5个独立packet序列。
+
+    flow_mfr由5个packet横向拼接：
+    - row 0-1: header，每行每包20 tokens，合计40 tokens
+    - row 2-7: payload，每行每包20 tokens；模型输入只取前2行payload，合计40 tokens
+    """
+    if len(flow_tokens_lines) != FLOW_ROWS:
+        return None
+
+    for row_tokens in flow_tokens_lines:
+        if len(row_tokens) != FLOW_TOKENS_PER_ROW:
+            return None
+
+    packet_samples = []
+    for packet_idx in range(PACKETS_PER_FLOW):
+        col_start = packet_idx * TOKENS_PER_PACKET_ROW
+        col_end = col_start + TOKENS_PER_PACKET_ROW
+
+        packet_tokens = []
+        for row_idx in range(HEADER_ROWS):
+            packet_tokens.extend(flow_tokens_lines[row_idx][col_start:col_end])
+        for row_idx in range(HEADER_ROWS, HEADER_ROWS + PAYLOAD_ROWS_FOR_MODEL):
+            packet_tokens.extend(flow_tokens_lines[row_idx][col_start:col_end])
+
+        if len(packet_tokens) != PACKET_TOKEN_LENGTH:
+            return None
+        packet_samples.append(packet_tokens)
+
+    return packet_samples
+
+
 def read_and_split_flow_to_packets(txt_file):
     """
     读取单个"流MFR矩阵.txt"文件，并将其拆分为5个数据包
@@ -81,11 +121,11 @@ def read_and_split_flow_to_packets(txt_file):
     流MFR矩阵格式：
     - 第1行：标签（如"NonVPN NonVPN"或"NonTor NonTor"等，会被跳过）
     - 第2-9行：8行×100列的MFR矩阵数据，由5个数据包的MFR矩阵横向拼接
-      * Packet1: 列0-19 (共160个token = 8行×20列)
-      * Packet2: 列20-39 (共160个token = 8行×20列)
-      * Packet3: 列40-59 (共160个token = 8行×20列)
-      * Packet4: 列60-79 (共160个token = 8行×20列)
-      * Packet5: 列80-99 (共160个token = 8行×20列)
+      * Packet1: 列0-19 (Header 40 + Payload 40 = 80 tokens)
+      * Packet2: 列20-39 (Header 40 + Payload 40 = 80 tokens)
+      * Packet3: 列40-59 (Header 40 + Payload 40 = 80 tokens)
+      * Packet4: 列60-79 (Header 40 + Payload 40 = 80 tokens)
+      * Packet5: 列80-99 (Header 40 + Payload 40 = 80 tokens)
     
     参数:
         txt_file: "流MFR矩阵.txt"文件路径
@@ -93,7 +133,7 @@ def read_and_split_flow_to_packets(txt_file):
     返回:
         list: [(flow_id, packet_index, packet_tokens, dataset_name), ...] 
               其中flow_id为8位字符串，packet_index为整数(1-5)，
-              packet_tokens为160个4位十六进制字符串组成的列表（每个token=2bytes），
+              packet_tokens为80个4位十六进制字符串组成的列表（每个token=2bytes），
               dataset_name为数据集名称
               如果文件无效，返回None
     """
@@ -102,7 +142,7 @@ def read_and_split_flow_to_packets(txt_file):
             lines = f.readlines()
         
         # 第一行是标签（如"CICIoT2022 Idle"），跳过
-        # 第2-9行是8行MFR数据，每行200个token
+        # 第2-9行是8行MFR数据，每行100个token
         if len(lines) < 9:  # 至少需要标签行 + 8行MFR数据
             return None
         
@@ -140,36 +180,12 @@ def read_and_split_flow_to_packets(txt_file):
                 tokens = line.split()
                 flow_tokens_lines.append(tokens)
         
-        # 检查是否有8行数据
-        if len(flow_tokens_lines) != 8:
+        packet_tokens_list = split_flow_matrix_to_packet80(flow_tokens_lines)
+        if packet_tokens_list is None:
             return None
-        
-        # 检查每行是否都有100个token
-        for i, row_tokens in enumerate(flow_tokens_lines):
-            if len(row_tokens) != 100:
-                return None
-        
-        # 拆分为5个数据包（横向拆分）
-        # 每个数据包占20列，共8行，所以每个数据包160个token
+
         packet_samples = []
-        for packet_idx in range(1, 6):  # 1到5
-            # 计算当前数据包的列范围
-            col_start = (packet_idx - 1) * 20  # 0, 20, 40, 60, 80
-            col_end = packet_idx * 20          # 20, 40, 60, 80, 100
-            
-            # 从8行中提取该数据包的token
-            hex_tokens = []
-            for row_tokens in flow_tokens_lines:
-                # 提取该行的col_start到col_end列
-                hex_tokens.extend(row_tokens[col_start:col_end])
-            
-            # 检查token数量
-            if len(hex_tokens) != 160:
-                continue
-            
-            # 保留十六进制字符串格式（每个token由2bytes=4位十六进制字符串组成）
-            packet_tokens = hex_tokens
-            
+        for packet_idx, packet_tokens in enumerate(packet_tokens_list, start=1):
             # 创建数据包样本：(流ID, 数据包序号, 数据包token列表, 数据集名称)
             packet_sample = (flow_id, packet_idx, packet_tokens, dataset_name)
             packet_samples.append(packet_sample)
@@ -461,10 +477,10 @@ def verify_dataset(dataset_file, num_samples=5):
 def main():
     parser = argparse.ArgumentParser(description='Prepare dataset_pretrain.pt from MFR dataset')
     parser.add_argument('--mfr_root', type=str, 
-                        default='/root/datasets_new/MFR数据集_预训练_随机化/',
+                        default='/root/datasets/MFR数据集_预训练_随机化/',
                         help='Root directory of MFR dataset')
     parser.add_argument('--output_dir', type=str, 
-                        default='/root/datasets_new/pt_packet_datasets_随机化/',
+                        default='/root/datasets/pt_packet_datasets_随机化/',
                         help='Output directory for dataset_pretrain.pt')
     parser.add_argument('--datasets', type=str, nargs='+', default=None,
                         help='List of dataset names to process (e.g., NonVPN_MFR NonTor_MFR). '
@@ -538,7 +554,7 @@ def main():
     print(f"  每个样本: (flow_id, packet_index, packet_tokens, dataset_name)")
     print(f"  - flow_id: 8位字符串 (如 '00000123')")
     print(f"  - packet_index: 整数 (1-5，代表数据包在流中的序号)")
-    print(f"  - packet_tokens: 160个4位十六进制字符串(2bytes)组成的列表 (如 ['4500', '0020', 'd893', ...])")
+    print(f"  - packet_tokens: 80个4位十六进制字符串(2bytes)组成的列表 (如 ['4500', '0020', 'd893', ...])")
     print(f"  - dataset_name: 数据集名称 (如 'NonVPN_MFR'、'NonTor_MFR'、'browser_MFR'、'BenignTraffic_MFR')")
     print(f"\n📌 用于训练时指定: --dataset_path {output_file}")
     print()
