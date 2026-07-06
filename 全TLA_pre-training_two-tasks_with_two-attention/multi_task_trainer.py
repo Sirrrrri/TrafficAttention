@@ -328,12 +328,6 @@ class FlowAttention(nn.Module):
         x = x.view(*new_x_shape)
         return x.permute(0, 2, 1, 3)
     
-    def pool_payload(self, payload_hidden):
-        batch_size, seq_len, hidden_size = payload_hidden.size()
-        payload_reshaped = payload_hidden.view(batch_size, 4, 10, hidden_size)
-        pooled_payload = torch.mean(payload_reshaped, dim=2)
-        return pooled_payload
-    
     def unpool_payload(self, pooled_payload):
         batch_size, pooled_len, hidden_size = pooled_payload.size()
         unpooled = pooled_payload.unsqueeze(2).repeat(1, 1, 10, 1)
@@ -423,16 +417,13 @@ class FlowAttention(nn.Module):
     
     def forward(self, all_packet_hiddens):
         all_headers = []
-        all_payloads = []
         all_pooled_payloads = []
 
         for packet_hidden in all_packet_hiddens:
             header = packet_hidden[:, :self.header_size, :]
-            payload = packet_hidden[:, self.header_size:, :]
-            pooled_payload = self.pool_payload(payload)
+            pooled_payload = packet_hidden[:, self.header_size:, :]
 
             all_headers.append(header)
-            all_payloads.append(payload)
             all_pooled_payloads.append(pooled_payload)
 
         output_headers = []
@@ -449,8 +440,7 @@ class FlowAttention(nn.Module):
             payload_out = self.apply_attention_with_self(all_pooled_payloads[i], payload_window, i, is_header=False)
 
             header_final = self.header_norm(all_headers[i] + header_out)
-            payload_out_unpooled = self.unpool_payload(payload_out)
-            payload_final = self.payload_norm(all_payloads[i] + payload_out_unpooled)
+            payload_final = self.payload_norm(all_pooled_payloads[i] + payload_out)
 
             output_headers.append(header_final)
             output_payloads.append(payload_final)
@@ -542,11 +532,11 @@ class FlowAttentionStack(nn.Module):
         对5个数据包应用8层流级注意力
 
         Args:
-            all_packet_hiddens: list of 4 tensors, each [batch_size, seq_length, hidden_size]
+            all_packet_hiddens: list of 5 tensors, each [batch_size, 44, hidden_size]
 
         Returns:
             output_headers: list of 4 tensors
-            output_payloads: list of 4 tensors
+            output_payloads: list of 5 tensors, each [batch_size, 4, hidden_size]
         """
         output_packets = all_packet_hiddens
         output_headers = None
@@ -554,7 +544,7 @@ class FlowAttentionStack(nn.Module):
 
         for layer in self.layers:
             output_headers, output_payloads = layer(output_packets)
-            # Reconstruct full packets for next layer
+            # Keep payload pooled across flow-attention layers.
             output_packets = [torch.cat([h, p], dim=1) for h, p in zip(output_headers, output_payloads)]
 
         return output_headers, output_payloads
@@ -578,7 +568,7 @@ class PoolingLayer(nn.Module):
             all_packet_hiddens: list of 4 tensors, each [batch_size, 80, hidden_size]
 
         Returns:
-            pooled_packets: list of 4 tensors, each [batch_size, 80, hidden_size]（payload部分被池化后恢复）
+            pooled_packets: list of 5 tensors, each [batch_size, 44, hidden_size]
         """
         pooled_packets = []
         for packet_hidden in all_packet_hiddens:
@@ -590,12 +580,8 @@ class PoolingLayer(nn.Module):
             payload_reshaped = payload.view(batch_size, 4, 10, hidden_size)
             pooled_payload = torch.mean(payload_reshaped, dim=2)  # [batch_size, 4, hidden_size]
 
-            # 通过repeat恢复到原始形状 [batch_size, 40, hidden_size]
-            unpooled_payload = pooled_payload.unsqueeze(2).repeat(1, 1, 10, 1)
-            unpooled_payload = unpooled_payload.view(batch_size, 40, hidden_size)
-
-            # 拼接header和unpooled payload
-            pooled_packet = torch.cat([header, unpooled_payload], dim=1)
+            # FlowAttention layers operate on the pooled payload representation.
+            pooled_packet = torch.cat([header, pooled_payload], dim=1)
             pooled_packets.append(pooled_packet)
 
         return pooled_packets
@@ -661,7 +647,7 @@ class BaseModel(nn.Module):
             packet_out = self.packet_attention_stack(packet_emb)  # [batch_size, 80, hidden_size]
             packet_outputs.append(packet_out)
 
-        # 池化层
+        # 池化层：只在进入FlowAttention前将payload从40 tokens池化为4 tokens
         pooled_packets = self.pooling_layer(packet_outputs)  # list of 4 tensors
 
         # 8层FlowAttention处理流级依赖
@@ -679,6 +665,7 @@ class BaseModel(nn.Module):
         # 拼接header和payload
         all_packets = []
         for header, payload in zip(flow_headers, flow_payloads):
+            payload = payload.unsqueeze(2).repeat(1, 1, 10, 1).view(batch_size, self.packet_size - self.header_size, hidden_size)
             packet = torch.cat([header, payload], dim=1)  # [batch_size, 80, hidden_size]
             all_packets.append(packet)
 
@@ -1807,7 +1794,7 @@ def build_multi_task_model(args, log_prefix=""):
         dropout=getattr(args, 'dropout', 0.1)
     )
 
-    # 池化层
+    # 池化层：只在进入FlowAttention前将payload从40 tokens池化为4 tokens
     pooling_layer = PoolingLayer(
         header_size=header_size,
         payload_size=payload_size

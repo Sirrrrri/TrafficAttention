@@ -349,19 +349,6 @@ class FlowAttention(nn.Module):
         # 返回: [batch_size, num_heads, seq_len, head_size]
         return x.permute(0, 2, 1, 3)
     
-    def pool_payload(self, payload_hidden):
-        """
-        将payload的40 tokens按每10个tokens进行平均池化
-        Input: [batch_size, 40, hidden_size]
-        Output: [batch_size, 4, hidden_size]
-        """
-        batch_size, seq_len, hidden_size = payload_hidden.size()
-        # 重塑为 [batch_size, 4, 10, hidden_size]
-        payload_reshaped = payload_hidden.view(batch_size, 4, 10, hidden_size)
-        # 按第3维（10个tokens）取平均
-        pooled_payload = torch.mean(payload_reshaped, dim=2)  # [batch_size, 4, hidden_size]
-        return pooled_payload
-    
     def unpool_payload(self, pooled_payload):
         """
         将池化后的payload恢复到原始尺寸（用于与原始输入进行残差连接）
@@ -448,21 +435,18 @@ class FlowAttention(nn.Module):
                                每个tensor包含一个数据包的hidden states
         Returns:
             output_headers: list of 4 tensors, each [batch_size, 40, hidden_size]
-            output_payloads: list of 4 tensors, each [batch_size, 40, hidden_size]
+            output_payloads: list of 5 tensors, each [batch_size, 4, hidden_size]
             probs: dictionary of attention probabilities
         """
-        # 分离所有数据包的header和payload
+        # 分离所有数据包的header和已池化payload。
         all_headers = []
-        all_payloads = []
         all_pooled_payloads = []
 
         for packet_hidden in all_packet_hiddens:
             header = packet_hidden[:, :self.header_size, :]  # [batch_size, 40, hidden_size]
-            payload = packet_hidden[:, self.header_size:, :]  # [batch_size, 40, hidden_size]
-            pooled_payload = self.pool_payload(payload)  # [batch_size, 4, hidden_size]
+            pooled_payload = packet_hidden[:, self.header_size:, :]  # [batch_size, 4, hidden_size]
 
             all_headers.append(header)
-            all_payloads.append(payload)
             all_pooled_payloads.append(pooled_payload)
 
         # 应用滑动窗口注意力（包括自己和相邻包）
@@ -484,9 +468,7 @@ class FlowAttention(nn.Module):
             # 残差连接 + Layer Norm (header)
             header_final = self.header_norm(all_headers[i] + header_out)
 
-            # 将池化后的payload恢复到原始尺寸，然后应用残差连接 + Layer Norm
-            payload_out_unpooled = self.unpool_payload(payload_out)
-            payload_final = self.payload_norm(all_payloads[i] + payload_out_unpooled)
+            payload_final = self.payload_norm(all_pooled_payloads[i] + payload_out)
 
             output_headers.append(header_final)
             output_payloads.append(payload_final)
@@ -505,7 +487,7 @@ class TwoLevelAttentionEncoder(nn.Module):
     """
     两级注意力编码器（新架构）
     第1-4层: 包级注意力堆栈（4层）
-    池化层: 对payload进行池化
+    池化层: 进入FlowAttention前对payload进行一次池化
     第5-12层: 流级注意力堆栈（8层）
     """
     def __init__(self, args):
@@ -587,7 +569,7 @@ class TwoLevelAttentionEncoder(nn.Module):
 
         all_packet_hiddens = packet_outputs
 
-        # 池化层：对每个packet的payload进行mean pooling
+        # 池化层：对每个packet的payload进行一次mean pooling
         pooled_packets = []
         for packet_hidden in all_packet_hiddens:
             header = packet_hidden[:, :self.header_size, :]  # [batch_size, 40, hidden_size]
@@ -598,11 +580,7 @@ class TwoLevelAttentionEncoder(nn.Module):
             payload_reshaped = payload.view(batch_size_p, 4, 10, hidden_size_p)
             pooled_payload = torch.mean(payload_reshaped, dim=2)  # [batch_size, 4, hidden_size]
 
-            # 恢复到原始形状用于后续处理
-            pooled_payload_expanded = pooled_payload.unsqueeze(2).repeat(1, 1, 10, 1)
-            pooled_payload_expanded = pooled_payload_expanded.view(batch_size_p, 40, hidden_size_p)
-
-            pooled_packet = torch.cat([header, pooled_payload_expanded], dim=1)
+            pooled_packet = torch.cat([header, pooled_payload], dim=1)
             pooled_packets.append(pooled_packet)
 
         # 第5-12层: 应用8层流级注意力堆栈
@@ -611,7 +589,7 @@ class TwoLevelAttentionEncoder(nn.Module):
             output_headers, output_payloads, f_probs = flow_attention(pooled_packets)
             flow_probs_list.append(f_probs)
 
-            # 重新组合为packet格式用于下一层
+            # 重新组合为packet格式用于下一层，payload保持池化后的4-token表示。
             pooled_packets = []
             for i in range(self.packet_count):
                 packet_output = torch.cat([output_headers[i], output_payloads[i]], dim=1)
@@ -619,8 +597,13 @@ class TwoLevelAttentionEncoder(nn.Module):
 
         self.flow_attention_probs = flow_probs_list
 
-        # 重新组合所有数据包
-        packet_outputs = pooled_packets
+        # 重新组合所有数据包，并将pooled payload恢复成40 tokens以保持原始序列协议。
+        packet_outputs = []
+        for packet_output in pooled_packets:
+            header = packet_output[:, :self.header_size, :]
+            pooled_payload = packet_output[:, self.header_size:, :]
+            payload = self.flow_attention_stack[0].unpool_payload(pooled_payload)
+            packet_outputs.append(torch.cat([header, payload], dim=1))
 
         # 保留[CLS] token和每个packet之后的[SEP] token
         cls_output = hidden_states[:, 0:1, :]
@@ -698,16 +681,12 @@ class Classifier(nn.Module):
         # 编码器: 第1-4层包级 + 池化 + 第5-12层流级
         output, encoder_probs = self.encoder(emb, seg)
 
-        # 池化 - 使用CLS token或其他池化方式
-        if self.pooling == "mean":
-            pooled_output = torch.mean(output, dim=1)
-        elif self.pooling == "max":
-            pooled_output = torch.max(output, dim=1)[0]
-        elif self.pooling == "last":
-            pooled_output = output[:, -1, :]
-        else:
-            # 默认: 使用第一个token (CLS)
-            pooled_output = output[:, 0, :]
+        packet_representations = []
+        for start_pos in packet_start_positions(FLOW_PACKET_COUNT, self.encoder.packet_size):
+            end_pos = start_pos + self.encoder.packet_size
+            packet_representations.append(output[:, start_pos:end_pos, :])
+        packet_representations = torch.cat(packet_representations, dim=1)
+        pooled_output = torch.mean(packet_representations, dim=1)
 
         # 分类头
         classifier_output = torch.tanh(self.output_layer_1(pooled_output))
