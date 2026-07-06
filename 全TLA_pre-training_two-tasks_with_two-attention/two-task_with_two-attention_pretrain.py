@@ -10,19 +10,19 @@
 1. NSP_Indicating (Packet Masking) - 50%
    - 使用流级别Packet Masking策略（h-h-h-h-h和p-p-p-p-p关系版本）
    - 预训练任务: MLM (仅Masked Language Model)
-   - 输入: 流MFR矩阵（前4个数据包，每个80 tokens）
-   - Sequence Length: 325 tokens (包含CLS、SEP、padding)
+   - 输入: 流MFR矩阵（前5个数据包，每个80 tokens）
+   - Sequence Length: 410 tokens (包含CLS、SEP、padding)
    - 每个流产生1个样本
    - 两种操作，随机选择：
      - 操作1（h-h-h-h-h关系）：将流的四个数据包MFR矩阵的payload都设置为CNS，随机mask某一个数据包MFR矩阵的header，mask率90%
      - 操作2（p-p-p-p-p关系）：将流的四个数据包MFR矩阵的header都设置为CNS，随机mask某一个数据包MFR矩阵的payload，mask率90%
 
 2. MFR-Masking (Header/Payload Masking) - 50%
-   - 对每条流，对前4个数据包MFR矩阵分别进行处理
+   - 对每条流，对前5个数据包MFR矩阵分别进行处理
    - 每个数据包：80 tokens（Header 40 + Payload 40）
-   - 单个目标数据包mask后放入4包显式边界槽位，其它包位用PAD占位
-   - Sequence Length: 325 tokens (CLS + 4 * (80 + SEP))以匹配NSP_Indicating
-   - 每个流产生4个样本（每个数据包1个样本）
+   - 单个目标数据包mask后放入5包显式边界槽位，其它包位用PAD占位
+   - Sequence Length: 410 tokens (CLS + 5 * (80 + SEP) plus padding)以匹配NSP_Indicating
+   - 每个流产生5个样本（每个数据包1个样本）
    - 三种关系masking策略（按所有数据包划分）：
      - h-h关系 (30%)：Payload用[CNS]替代，对Header随机mask 80%
      - p-p关系 (30%)：Header用[CNS]替代，对Payload随机mask 80%
@@ -30,7 +30,7 @@
 
 输入数据格式：
 - 原始数据：流MFR矩阵（前5个数据包，每个160 tokens）
-- 处理后：流MFR矩阵（前4个数据包，每个80 tokens）
+- 处理后：流MFR矩阵（前5个数据包，每个80 tokens）
 - 预训练任务使用处理后的流MFR矩阵
 """
 
@@ -186,8 +186,8 @@ def main():
                         help="Max length for span masking.")
     
     # Sequence length option
-    parser.add_argument("--seq_length", type=int, default=325,
-                        help="Sequence length for flow MFR matrix (default: 325 tokens = CLS + 4 * (80 tokens + SEP)).")
+    parser.add_argument("--seq_length", type=int, default=410,
+                        help="Sequence length for flow MFR matrix (default: 410 tokens = CLS + 5 * (80 tokens + SEP) plus padding).")
     
     # NSP_Indicating任务参数（Packet Masking）
     parser.add_argument("--nsp_indicating_weight", type=float, default=0.50,
@@ -321,11 +321,11 @@ def main():
     print("=" * 80)
     print(f"数据处理流程:")
     print(f"  - 原始数据: 流MFR矩阵（前5个数据包 × 160 tokens = 800 tokens）")
-    print(f"  - 处理策略: 取前4个数据包，每个数据包只取前{args.tokens_per_packet} tokens")
-    print(f"  - 处理后数据: 流MFR矩阵（前4个数据包 × {args.tokens_per_packet} tokens = {args.tokens_per_packet * 4} tokens）")
+    print(f"  - 处理策略: 取前5个数据包，每个数据包只取前{args.tokens_per_packet} tokens")
+    print(f"  - 处理后数据: 流MFR矩阵（前5个数据包 × {args.tokens_per_packet} tokens = {args.tokens_per_packet * 5} tokens）")
     print(f"  - Sequence Length: {args.seq_length} tokens (包含CLS、SEP、padding)")
     print(f"  - Batch Size: {args.batch_size}")
-    print(f"  - 内存优化: 从800 tokens降低到320 tokens (减少60%)")
+    print(f"  - 内存优化: 从800 tokens规整为400 tokens (5 packets × 80 tokens)")
     print("")
     print(f"数据加载策略 (分批次):")
     print(f"  - 使用小buffer快速启动训练")
@@ -336,8 +336,8 @@ def main():
     print(f"  - 每个step加载 {args.batch_size} 个流样本")
     print(f"  - 这 {args.batch_size} 个流同时被两个任务处理")
     print(f"  - NSP_Indicating: {args.batch_size} 个样本（每流1个）")
-    print(f"  - MFR-Masking: {args.batch_size * 4} 个样本（每流4个数据包）")
-    print(f"  - 每个step产生 {args.batch_size * 5} 个训练样本 ({args.batch_size} + {args.batch_size * 4})")
+    print(f"  - MFR-Masking: {args.batch_size * 5} 个样本（每流5个数据包）")
+    print(f"  - 每个step产生 {args.batch_size * 6} 个训练样本 ({args.batch_size} + {args.batch_size * 5})")
     print("")
     print("=" * 80)
     print("两级注意力机制配置")
@@ -361,14 +361,14 @@ def main():
     print("【Level 2: Flow-Level Attention】")
     print(f"  Status: {'✓ Enabled' if args.use_flow_attention else '✗ Disabled'}")
     if args.use_flow_attention:
-        print(f"  Purpose: 对4个数据包之间的跨包依赖关系建模")
+        print(f"  Purpose: 对5个数据包之间的跨包依赖关系建模")
         print(f"  Input: 包级注意力的输出（池化后）")
         print(f"  Payload池化: 40 tokens -> 4 tokens (每10个tokens平均池化)")
         print(f"  Mechanisms:")
-        print(f"    (1) 数据重组: 拼接4个数据包的header和池化后的payload")
+        print(f"    (1) 数据重组: 拼接5个数据包的header和池化后的payload")
         print(f"    (2) 滑动窗口注意力:")
-        print(f"        - 包1和包4: 窗口大小=2（attend到1个相邻包）")
-        print(f"        - 包2和包3: 窗口大小=3（attend到2个相邻包）")
+        print(f"        - 首尾包: 窗口大小=2（attend到自己和1个相邻包）")
+        print(f"        - 中间包: 窗口大小=3（attend到自己和2个相邻包）")
         print(f"    (3) h查h: Header的tokens作q，相邻包的header作k&v")
         print(f"    (4) p查p: Payload的tokens作q，相邻包的payload作k&v")
     print("=" * 80)
@@ -376,18 +376,18 @@ def main():
     print("两个预训练任务及其权重:")
     print(f"  1. NSP_Indicating (Packet Masking): {args.nsp_indicating_weight*100:.0f}%")
     print(f"     - 使用流级别Packet Masking策略（h-h-h-h-h和p-p-p-p-p关系版本）")
-    print(f"     - 输入: 流MFR矩阵（前4个数据包，每个80 tokens）")
-    print(f"     - Sequence Length: 325 tokens")
+    print(f"     - 输入: 流MFR矩阵（前5个数据包，每个80 tokens）")
+    print(f"     - Sequence Length: 410 tokens")
     print(f"     - 两种操作，随机选择：")
     print(f"       * 操作1（h-h-h-h-h关系）：payload设置为CNS，随机mask一个header（90%）")
     print(f"       * 操作2（p-p-p-p-p关系）：header设置为CNS，随机mask一个payload（90%）")
     print("")
     print(f"  2. MFR-Masking (Header/Payload Masking): {args.mfr_masking_weight*100:.0f}%")
-    print(f"     - 对每条流，对前4个数据包MFR矩阵分别进行处理")
+    print(f"     - 对每条流，对前5个数据包MFR矩阵分别进行处理")
     print(f"     - 每个数据包：80 tokens（Header 40 + Payload 40）")
-    print(f"     - 单个目标数据包mask后放入4包显式边界槽位，其它包位用PAD占位")
-    print(f"     - Sequence Length: 325 tokens (CLS + 4 * (80 + SEP))")
-    print(f"     - 每个流产生4个样本（每个数据包1个样本）")
+    print(f"     - 单个目标数据包mask后放入5包显式边界槽位，其它包位用PAD占位")
+    print(f"     - Sequence Length: 410 tokens (CLS + 5 * (80 + SEP) plus padding)")
+    print(f"     - 每个流产生5个样本（每个数据包1个样本）")
     print(f"     - 三种关系masking策略（按所有数据包划分）：")
     print(f"       * h-h关系 (30%)：Payload用[CNS]替代，对Header随机mask 80%")
     print(f"       * p-p关系 (30%)：Header用[CNS]替代，对Payload随机mask 80%")

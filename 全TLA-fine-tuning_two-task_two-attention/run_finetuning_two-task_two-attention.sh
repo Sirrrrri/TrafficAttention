@@ -2,7 +2,7 @@
 
 # ============================================================================
 # Two-task微调训练脚本（two-attention版本）- 四个数据集批量训练
-# 基于4个数据包结构的流量分类微调（每个数据包80 tokens）
+# 基于5个数据包结构的流量分类微调（每个数据包80 tokens）
 # 双重注意力机制: 包级注意力 + 流级注意力
 # ============================================================================
 #
@@ -38,7 +38,7 @@ VOCAB_PATH="/root/datasets_new/pt_packet_datasets_随机化/vocab.txt"
 EPOCHS_NUM=50
 BATCH_SIZE=32
 LEARNING_RATE=2e-5
-SEQ_LENGTH=325  # 4个数据包显式分隔: [CLS] + p1(80) + [SEP] + ... + p4(80) + [SEP]
+SEQ_LENGTH=410  # 5个数据包显式分隔: [CLS] + p1(80) + [SEP] + ... + p5(80) + [SEP] + padding
 
 # 数据集配置（.pt格式数据集基础路径，不含_train.pt等后缀）
 # 脚本会自动查找 _train.pt, _dev.pt, _test.pt 三个文件
@@ -409,7 +409,7 @@ CONFIG_PATH="/root/全TLA_Mine/models/bert/base_config.json"
 EPOCHS_NUM=50
 BATCH_SIZE=32
 LEARNING_RATE=2e-5
-SEQ_LENGTH=325
+SEQ_LENGTH=410
 
 # 训练单个数据集的函数
 train_dataset() {

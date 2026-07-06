@@ -51,7 +51,7 @@ def optimization_opts(parser):
 def training_opts(parser):
     parser.add_argument("--batch_size", type=int, default=32,                                                             
                         help="Batch size.")                                                                               
-    parser.add_argument("--seq_length", type=int, default=128,                                                            
+    parser.add_argument("--seq_length", type=int, default=410,                                                            
                         help="Sequence length.")                                                                          
     parser.add_argument("--dropout", type=float, default=0.5,                                                             
                         help="Dropout.")                                                                                  
@@ -113,5 +113,5 @@ def infer_opts(parser):
     # Inference options.
     parser.add_argument("--batch_size", type=int, default=64,
                         help="Batch size.")
-    parser.add_argument("--seq_length", type=int, default=128,
+    parser.add_argument("--seq_length", type=int, default=410,
                         help="Sequence length.")

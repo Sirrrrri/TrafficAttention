@@ -5,17 +5,17 @@
 
 1. NSP_Indicating (Packet Masking) - 50%
    - 使用流级别Packet Masking策略（h-h-h-h-h和p-p-p-p-p关系版本）
-   - 输入: 流MFR矩阵（前4个数据包，每个80 tokens）
-   - Sequence Length: 325 tokens
+   - 输入: 流MFR矩阵（前5个数据包，每个80 tokens）
+   - Sequence Length: 410 tokens
    - 两种操作，随机选择：
      - 操作1（h-h-h-h-h关系）：将流的四个数据包MFR矩阵的payload都设置为CNS，随机mask某一个数据包MFR矩阵的header，mask率90%
      - 操作2（p-p-p-p-p关系）：将流的四个数据包MFR矩阵的header都设置为CNS，随机mask某一个数据包MFR矩阵的payload，mask率90%
 
 2. MFR-Masking (Header/Payload Masking) - 50%
-   - 对每条流，从4个数据包MFR矩阵中随机选择1个数据包进行处理
+   - 对每条流的5个数据包分别生成MFR-Masking样本
    - 每个数据包：80 tokens（Header 40 + Payload 40）
-   - 单个目标数据包mask后放入4包显式边界槽位，其它包位用PAD占位
-   - Sequence Length: 325 tokens (CLS + 4 * (80 + SEP))
+   - 单个目标数据包mask后放入5包显式边界槽位，其它包位用PAD占位
+   - Sequence Length: 410 tokens (CLS + 5 * (80 + SEP) plus padding)
    - 三种关系masking策略（按batch_size内的流划分）：
      - h-h关系 (30%)：Payload用[CNS]替代，对Header随机mask 80%
      - p-p关系 (30%)：Header用[CNS]替代，对Payload随机mask 80%
@@ -27,9 +27,9 @@
 
 两级注意力机制：
    - 包级注意力（PacketAttention）：对每个数据包内部的header-payload关系建模
-   - 流级注意力（FlowAttention）：对4个数据包之间的跨包依赖关系建模
+   - 流级注意力（FlowAttention）：对5个数据包之间的跨包依赖关系建模
 
-输入数据格式：流MFR矩阵（前4个数据包，每个80 tokens）
+输入数据格式：流MFR矩阵（前5个数据包，每个80 tokens）
 """
 
 import sys
@@ -72,7 +72,7 @@ from uer.trainer import str2trainer, BertTrainer
 from uer.layers import str2embedding
 from uer.encoders import str2encoder
 
-FLOW_PACKET_COUNT = 4
+FLOW_PACKET_COUNT = 5
 
 
 def packet_start_positions(packet_count=FLOW_PACKET_COUNT, packet_size=80):
@@ -316,7 +316,7 @@ class PayloadAttentionLayer(nn.Module):
 class FlowAttention(nn.Module):
     """
     流级注意力机制模块
-    处理流的前4个数据包，使用滑动窗口注意力机制
+    处理流的前5个数据包，使用滑动窗口注意力机制
     """
     def __init__(self, hidden_size, num_attention_heads=8, header_size=40, payload_size=40, dropout=0.1):
         super(FlowAttention, self).__init__()
@@ -456,19 +456,15 @@ class FlowAttention(nn.Module):
         output_headers = []
         output_payloads = []
 
-        for i in range(4):
-            if i == 0:
-                header_out = self.apply_attention_with_self(all_headers[0], [all_headers[0], all_headers[1]], i, is_header=True)
-                payload_out = self.apply_attention_with_self(all_pooled_payloads[0], [all_pooled_payloads[0], all_pooled_payloads[1]], i, is_header=False)
-            elif i == 1:
-                header_out = self.apply_attention_with_self(all_headers[1], [all_headers[0], all_headers[1], all_headers[2]], i, is_header=True)
-                payload_out = self.apply_attention_with_self(all_pooled_payloads[1], [all_pooled_payloads[0], all_pooled_payloads[1], all_pooled_payloads[2]], i, is_header=False)
-            elif i == 2:
-                header_out = self.apply_attention_with_self(all_headers[2], [all_headers[1], all_headers[2], all_headers[3]], i, is_header=True)
-                payload_out = self.apply_attention_with_self(all_pooled_payloads[2], [all_pooled_payloads[1], all_pooled_payloads[2], all_pooled_payloads[3]], i, is_header=False)
-            else:
-                header_out = self.apply_attention_with_self(all_headers[3], [all_headers[2], all_headers[3]], i, is_header=True)
-                payload_out = self.apply_attention_with_self(all_pooled_payloads[3], [all_pooled_payloads[2], all_pooled_payloads[3]], i, is_header=False)
+        packet_count = len(all_packet_hiddens)
+        for i in range(packet_count):
+            window_start = max(0, i - 1)
+            window_end = min(packet_count, i + 2)
+            header_window = all_headers[window_start:window_end]
+            payload_window = all_pooled_payloads[window_start:window_end]
+
+            header_out = self.apply_attention_with_self(all_headers[i], header_window, i, is_header=True)
+            payload_out = self.apply_attention_with_self(all_pooled_payloads[i], payload_window, i, is_header=False)
 
             header_final = self.header_norm(all_headers[i] + header_out)
             payload_out_unpooled = self.unpool_payload(payload_out)
@@ -543,7 +539,7 @@ class PacketAttentionStack(nn.Module):
 class FlowAttentionStack(nn.Module):
     """
     8层流级注意力堆栈
-    处理流的前4个数据包，使用滑动窗口注意力机制
+    处理流的前5个数据包，使用滑动窗口注意力机制
     """
     def __init__(self, num_layers, hidden_size, num_attention_heads=8, header_size=40, payload_size=40, dropout=0.1):
         super(FlowAttentionStack, self).__init__()
@@ -561,7 +557,7 @@ class FlowAttentionStack(nn.Module):
 
     def forward(self, all_packet_hiddens):
         """
-        对4个数据包应用8层流级注意力
+        对5个数据包应用8层流级注意力
 
         Args:
             all_packet_hiddens: list of 4 tensors, each [batch_size, seq_length, hidden_size]
@@ -594,7 +590,7 @@ class PoolingLayer(nn.Module):
 
     def forward(self, all_packet_hiddens):
         """
-        对4个数据包进行池化
+        对5个数据包进行池化
 
         Args:
             all_packet_hiddens: list of 4 tensors, each [batch_size, 80, hidden_size]
@@ -644,7 +640,7 @@ class BaseModel(nn.Module):
         前向传播：embedding → 4层PacketAttention → 池化 → 8层FlowAttention
 
         Args:
-            src: [batch_size, seq_length] 输入序列（325 tokens）
+            src: [batch_size, seq_length] 输入序列（410 tokens）
             seg: [batch_size, seq_length] segment标记
 
         Returns:
@@ -653,8 +649,8 @@ class BaseModel(nn.Module):
         # Embedding
         emb = self.embedding(src, seg)  # [batch_size, seq_length, hidden_size]
 
-        # 将序列分解为4个数据包（每个80 tokens），输入协议：
-        # [CLS] + packet1(80) + [SEP] + ... + packet4(80) + [SEP] + padding
+        # 将序列分解为5个数据包（每个80 tokens），输入协议：
+        # [CLS] + packet1(80) + [SEP] + ... + packet5(80) + [SEP] + padding
         batch_size, seq_length, hidden_size = emb.size()
 
         starts = packet_start_positions(FLOW_PACKET_COUNT, self.packet_size)
@@ -728,7 +724,7 @@ class MultiTaskModel(nn.Module):
     
     两级注意力机制:
     1. 包级注意力（PacketAttention）: 对每个数据包内部的header-payload关系建模
-    2. 流级注意力（FlowAttention）: 对4个数据包之间的跨包依赖关系建模
+    2. 流级注意力（FlowAttention）: 对5个数据包之间的跨包依赖关系建模
     """
     def __init__(self, base_model, args, vocab_size):
         super(MultiTaskModel, self).__init__()
@@ -830,14 +826,14 @@ class MultiTaskDataset(Dataset):
     - 每个step加载N个流样本（N = batch_size，例如8个）
     - 这N个流同时被两个任务处理
     - 任务1 (NSP_Indicating): N个样本（每流1个样本）
-    - 任务2 (MFR-Masking): 4N个样本（每流4个数据包，每个数据包1个样本）
-    - 总计：每个step使用N个流，产生5N个训练样本
+    - 任务2 (MFR-Masking): 5N个样本（每流5个数据包，每个数据包1个样本）
+    - 总计：每个step使用N个流，产生6N个训练样本
     
     输入数据格式：
     - 原始数据：流MFR矩阵（前5个数据包，每个160 tokens）
-    - 处理后：流MFR矩阵（前4个数据包，每个80 tokens）
-    - NSP_Indicating: 使用流级别Packet Masking策略（h-h-h-h-h和p-p-p-p-p关系版本），Sequence Length: 325
-    - MFR-Masking: 单个目标数据包mask后放入4包显式边界槽位，Sequence Length: 325
+    - 处理后：流MFR矩阵（前5个数据包，每个80 tokens）
+    - NSP_Indicating: 使用流级别Packet Masking策略（h-h-h-h-h和p-p-p-p-p关系版本），Sequence Length: 410
+    - MFR-Masking: 单个目标数据包mask后放入5包显式边界槽位，Sequence Length: 410
     """
     def __init__(self, args, dataset_path, batch_size, proc_id, proc_num, shuffle=True):
         self.args = args
@@ -854,7 +850,7 @@ class MultiTaskDataset(Dataset):
         if self.seq_length < required_seq_length:
             raise ValueError(
                 f"seq_length={self.seq_length}会截断显式包边界协议；"
-                f"4包输入至少需要{required_seq_length}=1+4*({self.tokens_per_packet}+1)。"
+                f"{self.packet_count}包输入至少需要{required_seq_length}=1+{self.packet_count}*({self.tokens_per_packet}+1)。"
             )
         
         # 任务权重（用于采样）
@@ -1005,7 +1001,7 @@ class MultiTaskDataset(Dataset):
                 elif isinstance(instance, (list, tuple)):
                     # 流MFR矩阵格式: 解析为整数列表
                     # 原始数据: 5个数据包 × 160 tokens = 800 tokens
-                    # 处理后: 4个数据包 × 80 tokens = 320 tokens
+                    # 处理后: 5个数据包 × 80 tokens = 400 tokens
                     
                     # 首先将原始数据转换为整数（与All版本一致）
                     raw_flow = []
@@ -1029,20 +1025,19 @@ class MultiTaskDataset(Dataset):
                             except (ValueError, TypeError):
                                 raw_flow.append(self.pad_id)
                     
-                    # 从5个数据包（每个160 tokens）提取前4个数据包的前80 tokens
+                    expected_len = self.tokens_per_packet * self.packet_count
+                    source_stride = self.tokens_per_packet
+                    if len(raw_flow) >= self.packet_count * self.tokens_per_packet * 2:
+                        source_stride = self.tokens_per_packet * 2
+
                     flow = []
-                    for pkt_idx in range(4):  # 只取前4个数据包
-                        start = pkt_idx * 160  # 原始每个数据包160 tokens
-                        # 每个数据包只取前80 tokens
-                        packet_tokens = raw_flow[start:start+80]
-                        
-                        # 确保每个packet正好80 tokens
-                        if len(packet_tokens) < 80:
-                            packet_tokens = packet_tokens + [self.pad_id] * (80 - len(packet_tokens))
-                        flow.extend(packet_tokens[:80])
-                    
-                    # 确保最终长度为320 tokens (4 packets × 80 tokens)
-                    expected_len = self.tokens_per_packet * self.packet_count  # 320
+                    for pkt_idx in range(self.packet_count):
+                        start = pkt_idx * source_stride
+                        packet_tokens = raw_flow[start:start + self.tokens_per_packet]
+                        if len(packet_tokens) < self.tokens_per_packet:
+                            packet_tokens = packet_tokens + [self.pad_id] * (self.tokens_per_packet - len(packet_tokens))
+                        flow.extend(packet_tokens[:self.tokens_per_packet])
+
                     if len(flow) < expected_len:
                         flow = flow + [self.pad_id] * (expected_len - len(flow))
                     elif len(flow) > expected_len:
@@ -1065,44 +1060,36 @@ class MultiTaskDataset(Dataset):
                     flow_dict[flow_id] = []
                 flow_dict[flow_id].append((packet_idx, packet_tokens))
             
-            # 对每个流，按packet_idx排序，取前4个包，拼接成流MFR矩阵
             for flow_id, packets in flow_dict.items():
-                # 按packet_idx排序
                 packets.sort(key=lambda x: x[0])
-                # 取前4个包
-                packets = packets[:4]
-                
-                # 只有当流有至少1个数据包时才处理
+                packets = packets[:self.packet_count]
+
                 if len(packets) == 0:
                     continue
-                
-                # 拼接成320 tokens的流 (4 packets × 80 tokens)
+
                 flow_tokens = []
                 for _, packet_tokens in packets:
-                    # 原始数据每个packet是160 tokens
-                    # 处理：只取前80个tokens
                     packet_int_tokens = []
-                    for token_str in packet_tokens[:80]:  # 只取前80个tokens
+                    for token_str in packet_tokens[:self.tokens_per_packet]:
                         try:
-                            val = int(token_str, 16)  # 十六进制转换
-                            packet_int_tokens.append(val + 5)  # +5偏移
+                            val = int(token_str, 16)
+                            packet_int_tokens.append(val + 5)
                         except (ValueError, TypeError):
                             try:
-                                packet_int_tokens.append(int(token_str))  # 十进制
+                                packet_int_tokens.append(int(token_str))
                             except (ValueError, TypeError):
                                 packet_int_tokens.append(self.pad_id)
-                    
-                    # 确保每个packet正好80 tokens
-                    while len(packet_int_tokens) < 80:
+
+                    while len(packet_int_tokens) < self.tokens_per_packet:
                         packet_int_tokens.append(self.pad_id)
-                    flow_tokens.extend(packet_int_tokens[:80])
-                
-                # 确保长度为320 tokens (4 packets × 80 tokens)
-                while len(flow_tokens) < 320:
+                    flow_tokens.extend(packet_int_tokens[:self.tokens_per_packet])
+
+                expected_len = self.tokens_per_packet * self.packet_count
+                while len(flow_tokens) < expected_len:
                     flow_tokens.append(self.pad_id)
-                if len(flow_tokens) > 320:
-                    flow_tokens = flow_tokens[:320]
-                
+                if len(flow_tokens) > expected_len:
+                    flow_tokens = flow_tokens[:expected_len]
+
                 flows.append(flow_tokens)
         
         # 组织完成，打印统计
@@ -1134,14 +1121,14 @@ class MultiTaskDataset(Dataset):
           - 用流的四个数据包MFR矩阵中剩余没被mask的payload预测被mask的payload
         
         Args:
-            tokens: 原始tokens列表（包含4个数据包，每个80 tokens = 320 tokens）
+            tokens: 原始tokens列表（包含5个数据包，每个80 tokens = 400 tokens）
         
         Returns:
             masked_tokens: masked后的tokens
             labels: 原始tokens（用于计算loss，-1表示不需要预测）
         """
         # 确保tokens长度正确
-        expected_len = self.tokens_per_packet * self.packet_count  # 320
+        expected_len = self.tokens_per_packet * self.packet_count  # 400
         if len(tokens) < expected_len:
             tokens = tokens + [self.pad_id] * (expected_len - len(tokens))
         elif len(tokens) > expected_len:
@@ -1244,7 +1231,7 @@ class MultiTaskDataset(Dataset):
     def _apply_mfr_masking_single_packet(self, packet_tokens, relation_type):
         """
         应用MFR Masking策略（MFR-Masking任务）- 单个数据包版本
-        单个目标数据包独立mask后放入4包显式边界槽位
+        单个目标数据包独立mask后放入5包显式边界槽位
         
         三种关系masking策略：
         1. h-h关系：Payload用[CNS]替代，对Header随机mask 80%
@@ -1361,7 +1348,7 @@ class MultiTaskDataset(Dataset):
         创建NSP_Indicating任务样本（Packet Masking）
         
         Args:
-            flow: 流的数据包tokens（4个数据包×80 tokens = 320 tokens）
+            flow: 流的数据包tokens（5个数据包×80 tokens = 400 tokens）
         
         Returns:
             src: 输入序列（masked）
@@ -1369,7 +1356,7 @@ class MultiTaskDataset(Dataset):
             tgt_mlm: MLM标签
         """
         # 确保flow长度正确
-        expected_len = self.tokens_per_packet * self.packet_count  # 320
+        expected_len = self.tokens_per_packet * self.packet_count  # 400
         if len(flow) < expected_len:
             flow = flow + [self.pad_id] * (expected_len - len(flow))
         elif len(flow) > expected_len:
@@ -1403,8 +1390,8 @@ class MultiTaskDataset(Dataset):
         对指定数据包进行处理
         
         Args:
-            flow: 流的数据包tokens（4个数据包×80 tokens = 320 tokens）
-            packet_idx: 数据包索引 (0-3)
+            flow: 流的数据包tokens（5个数据包×80 tokens = 400 tokens）
+            packet_idx: 数据包索引 (0-4)
             relation_type: 关系类型 ('hh', 'pp', 'hp')
         
         Returns:
@@ -1413,7 +1400,7 @@ class MultiTaskDataset(Dataset):
             tgt_mlm: MLM标签
         """
         # 确保flow长度正确
-        expected_len = self.tokens_per_packet * self.packet_count  # 320
+        expected_len = self.tokens_per_packet * self.packet_count  # 400
         if len(flow) < expected_len:
             flow = flow + [self.pad_id] * (expected_len - len(flow))
         elif len(flow) > expected_len:
@@ -1452,7 +1439,7 @@ class MultiTaskDataset(Dataset):
         - 每个batch包含N个流样本（N = batch_size）
         - 每个流被两个任务分别处理
         - NSP_Indicating: N个样本（每流1个样本）
-        - MFR-Masking: 4N个样本（每流4个数据包，每个数据包1个样本）
+        - MFR-Masking: 5N个样本（每流5个数据包，每个数据包1个样本）
         - 返回的batch包含所有任务的样本（按任务顺序：indicating → masking）
         """
         if self.proc_id == 0:
@@ -1524,16 +1511,16 @@ class MultiTaskDataset(Dataset):
                     batch_task_type.append('nsp_indicating')
                 
                 # === 任务2: MFR-Masking ===
-                # 对每个流的4个数据包分别进行MFR-Masking处理
-                # 按所有数据包（batch_size * 4）划分三种关系类型：30% h-h, 30% p-p, 40% h-p
+                # 对每个流的5个数据包分别进行MFR-Masking处理
+                # 按所有数据包（batch_size * 5）划分三种关系类型：30% h-h, 30% p-p, 40% h-p
                 num_flows = len(batch_flows)
-                total_packets = num_flows * 4  # 每个流有4个数据包
+                total_packets = num_flows * self.packet_count
                 num_hh = max(1, int(total_packets * self.hh_ratio))
                 num_pp = max(1, int(total_packets * self.pp_ratio))
                 num_hp = total_packets - num_hh - num_pp
                 
                 # 为所有数据包分配关系类型
-                packet_list = [(flow_idx, pkt_idx) for flow_idx in range(num_flows) for pkt_idx in range(4)]
+                packet_list = [(flow_idx, pkt_idx) for flow_idx in range(num_flows) for pkt_idx in range(self.packet_count)]
                 random.shuffle(packet_list)
                 hh_packets = set(packet_list[:num_hh])
                 pp_packets = set(packet_list[num_hh:num_hh + num_pp])
@@ -1541,7 +1528,7 @@ class MultiTaskDataset(Dataset):
                 
                 # 为每个流的每个数据包创建样本
                 for flow_idx, flow in enumerate(batch_flows):
-                    for packet_idx in range(4):
+                    for packet_idx in range(self.packet_count):
                         # 确定该数据包的关系类型
                         if (flow_idx, packet_idx) in hh_packets:
                             relation_type = 'hh'
@@ -1562,10 +1549,10 @@ class MultiTaskDataset(Dataset):
                     # 首次batch生成提示（只打印一次）
                     if not self.first_batch_generated and self.proc_id == 0:
                         num_indicating = len(batch_flows)
-                        num_mfr_masking = len(batch_flows) * 4  # 每个流4个数据包
+                        num_mfr_masking = len(batch_flows) * self.packet_count
                         print(f"[Rank {self.proc_id}] ✓ 首个batch生成成功: {len(batch_flows)}个流 × 2任务 = {len(batch_src)}个样本")
                         print(f"[Rank {self.proc_id}]   - NSP_Indicating: {num_indicating}个样本（每流1个）")
-                        print(f"[Rank {self.proc_id}]   - MFR-Masking: {num_mfr_masking}个样本（每流4个数据包，每个数据包1个样本）")
+                        print(f"[Rank {self.proc_id}]   - MFR-Masking: {num_mfr_masking}个样本（每流5个数据包，每个数据包1个样本）")
                         print(f"[Rank {self.proc_id}] 数据加载完成，GPU训练开始！")
                         print("=" * 80)
                         self.first_batch_generated = True

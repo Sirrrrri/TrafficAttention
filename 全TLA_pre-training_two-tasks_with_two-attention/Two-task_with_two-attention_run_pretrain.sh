@@ -12,36 +12,36 @@
 # 1. NSP_Indicating (Packet Masking) - 50%
 #    - 每个流产生1个样本
 #    - 只mask流中的一个数据包（mask率90%）
-#    - 用剩下3个没被mask的数据包预测被mask的数据包
+#    - 用剩下4个没被mask的数据包预测被mask的数据包
 # 2. MFR-Masking (Header/Payload Masking) - 50%
-#    - 每个流产生1个样本（从4个数据包中随机选择1个）
+#    - 每个流产生5个样本（每个数据包1个）
 #    - 三种关系：h-h (30%), p-p (30%), h-p (40%)
 #    - mask率：h-h和p-p为80%，h-p为95%
 # 
 # 两级注意力机制：
 # 1. 包级注意力（PacketAttention）：对每个数据包内部的header-payload关系建模
-# 2. 流级注意力（FlowAttention）：对4个数据包之间的跨包依赖关系建模
+# 2. 流级注意力（FlowAttention）：对5个数据包之间的跨包依赖关系建模
 # 
-# 输入数据：流MFR矩阵（前4个数据包，每个80 tokens）
+# 输入数据：流MFR矩阵（前5个数据包，每个80 tokens）
 # 运行方式：nohup后台运行，日志保存在当前目录
 # ============================================================================
 
 # 激活conda环境（Mine环境有CUDA支持）
-source /root/anaconda3/bin/activate Mine
+source /root/anaconda3/bin/activate TrafficAttention
 
 # 脚本目录
-SCRIPT_DIR="/root/全TLA_Mine/全TLA_pre-training_two-tasks_with_two-attention/"
+SCRIPT_DIR="/root/TrafficAttention/全TLA_pre-training_two-tasks_with_two-attention/"
 cd "${SCRIPT_DIR}"
 
 # DATASET_PATH="/root/datasets/pt_packet_datasets_NSP/dataset_pretrain.pt"
 # 用随机化之后的数据集求一个心安
-DATASET_PATH="/root/datasets_new/pt_packet_datasets_随机化/dataset_pretrain_随机化.pt"
+DATASET_PATH="/root/datasets/pt_packet_datasets_随机化/dataset_pretrain_随机化.pt"
 
 # 词表路径
 VOCAB_PATH="/root/datasets_new/pt_packet_datasets_随机化/vocab.txt"
 
 # 配置文件路径
-CONFIG_PATH="/root/全TLA_Mine/models/bert/base_config.json"
+CONFIG_PATH="/root/TrafficAttention/models/bert/base_config.json"
 
 # 输出模型路径
 OUTPUT_MODEL_PATH="/root/models/全TLA_pre-trained_model_two_tasks_with_two-attention/全TLA_pre-trained_model_two_tasks_with_two_attention.bin"
@@ -57,7 +57,7 @@ REPORT_STEPS=100
 #      或 BATCH_SIZE=8, ACCUMULATION_STEPS=4 以保持等效训练效果
 BATCH_SIZE=8         # 每个GPU的batch大小
 ACCUMULATION_STEPS=4  # 梯度累积步数（如遇OOM可改为2或4）
-SEQ_LENGTH=325
+SEQ_LENGTH=410
 LEARNING_RATE=2e-4
 
 # 两个任务的权重
@@ -81,8 +81,8 @@ HEADER_SIZE=40                                 # Header token数
 WINDOW_SIZE=20                                 # Payload窗口注意力窗口大小
 
 # GPU配置
-GPU_RANKS="0 1"  # 使用GPU 0和1（双GPU训练）
-WORLD_SIZE=2     # 使用2个GPU
+GPU_RANKS="0 1 3"  # 使用GPU 0、1、2（双GPU训练）
+WORLD_SIZE=3     # 使用3个GPU
 
 # 数据加载优化参数
 DATALOADER_NUM_WORKERS=4  # 多进程数据加载workers数量（推荐：2-8）
@@ -108,19 +108,19 @@ echo ""
 echo "数据共享策略:"
 echo "  - 每次前向传播加载 ${BATCH_SIZE} 个流样本（每个GPU）"
 echo "  - 这 ${BATCH_SIZE} 个流同时被两个任务处理"
-SAMPLES_PER_FORWARD=$((BATCH_SIZE * 2))
+SAMPLES_PER_FORWARD=$((BATCH_SIZE * 6))
 EFFECTIVE_BATCH=$((BATCH_SIZE * ACCUMULATION_STEPS))
-EFFECTIVE_SAMPLES=$((EFFECTIVE_BATCH * 2))
-echo "  - 每次前向传播产生 ${SAMPLES_PER_FORWARD} 个训练样本 (${BATCH_SIZE}×2)"
+EFFECTIVE_SAMPLES=$((EFFECTIVE_BATCH * 6))
+echo "  - 每次前向传播产生 ${SAMPLES_PER_FORWARD} 个训练样本 (${BATCH_SIZE}×6)"
 echo "  - 有效batch (累积${ACCUMULATION_STEPS}次): ${EFFECTIVE_BATCH} 个流 = ${EFFECTIVE_SAMPLES} 个训练样本"
 echo ""
 echo "两个预训练任务及其权重:"
 echo "  1. NSP_Indicating (Packet Masking): ${NSP_INDICATING_WEIGHT} (50%)"
 echo "     - 只mask流中的一个数据包（mask率90%）"
-echo "     - 用剩下3个没被mask的数据包预测被mask的数据包"
+echo "     - 用剩下4个没被mask的数据包预测被mask的数据包"
 echo ""
 echo "  2. MFR-Masking (Header/Payload Masking): ${MFR_MASKING_WEIGHT} (50%)"
-echo "     - 每个流随机选择1个数据包进行处理"
+echo "     - 每个流的5个数据包各生成1个MFR样本"
 echo "     - 三种关系：h-h (30%), p-p (30%), h-p (40%)"
 echo "     - Mask率: h-h和p-p为80%，h-p为95%"
 echo "     - 每个数据包: Header(40 tokens) 或 Payload(40 tokens)"
@@ -132,7 +132,7 @@ echo "    * h-p关系: Payload作q，Header作k&v的交叉注意力"
 echo "    * p-p关系: Payload内部窗口注意力 (window=${WINDOW_SIZE})"
 echo "  - 流级注意力: 启用"
 echo "    * Payload池化: 40 tokens -> 4 tokens (每10个平均池化)"
-echo "    * 滑动窗口注意力: 包1/4窗口=2，包2/3窗口=3"
+echo "    * 滑动窗口注意力: 首尾包窗口=2，中间包窗口=3"
 echo "    * h查h, p查p: 分别对header和payload应用注意力"
 echo "  - 注意力头数: ${NUM_ATTENTION_HEADS}"
 echo ""
@@ -141,10 +141,10 @@ echo ""
 echo "GPU配置:"
 echo "  - GPU ranks: ${GPU_RANKS}"
 echo "  - World size: ${WORLD_SIZE}"
-TOTAL_FORWARD_SAMPLES=$((BATCH_SIZE * WORLD_SIZE * 2))
+TOTAL_FORWARD_SAMPLES=$((BATCH_SIZE * WORLD_SIZE * 6))
 TOTAL_EFFECTIVE_FLOWS=$((BATCH_SIZE * ACCUMULATION_STEPS * WORLD_SIZE))
-TOTAL_EFFECTIVE_SAMPLES=$((TOTAL_EFFECTIVE_FLOWS * 2))
-echo "  - 每次前向传播: ${TOTAL_FORWARD_SAMPLES} 个样本 (${BATCH_SIZE}×${WORLD_SIZE}×2)"
+TOTAL_EFFECTIVE_SAMPLES=$((TOTAL_EFFECTIVE_FLOWS * 6))
+echo "  - 每次前向传播: ${TOTAL_FORWARD_SAMPLES} 个样本 (${BATCH_SIZE}×${WORLD_SIZE}×6)"
 echo "  - 每个step有效batch: ${TOTAL_EFFECTIVE_FLOWS} 个流 = ${TOTAL_EFFECTIVE_SAMPLES} 个样本"
 echo ""
 echo "数据加载优化配置:"

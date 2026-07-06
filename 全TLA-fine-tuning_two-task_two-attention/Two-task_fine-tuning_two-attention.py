@@ -1,17 +1,17 @@
 """
-基于4个数据包的下游任务微调脚本
-与预训练任务对齐，使用4个数据包的拼接作为输入
+基于5个数据包的下游任务微调脚本
+与预训练任务对齐，使用5个数据包的拼接作为输入
 
 预训练与微调的差别:
 - 预训练: 使用NSP Indicating预训练任务训练模型
-- 微调: 给定4个数据包，预测流量类别 (Traffic Classification) -> K分类
+- 微调: 给定5个数据包，预测流量类别 (Traffic Classification) -> K分类
 
 输入格式:
-- seq_length: 325 (保持与预训练显式包边界协议一致)
-- 结构: [CLS] + packet1_tokens(80) + [SEP] + packet2_tokens(80) + [SEP] + packet3_tokens(80) + [SEP] + packet4_tokens(80)
-- 每个数据包80个tokens，总共: 1 + 4 * (80 + 1) = 325 tokens
+- seq_length: 410 (保持与预训练显式包边界协议一致)
+- 结构: [CLS] + packet1_tokens(80) + [SEP] + packet2_tokens(80) + [SEP] + packet3_tokens(80) + [SEP] + packet4_tokens(80) + [SEP] + packet5_tokens(80) + [SEP]
+- 每个数据包80个tokens，总共: 1 + 5 * (80 + 1) = 406，padding到410 tokens
 - seg: 所有位置都使用 segment 1
-  格式: [CLS]=1, packet1=1, [SEP]=1, packet2=1, [SEP]=1, packet3=1, [SEP]=1, packet4=1
+  格式: [CLS]=1, packet1=1, [SEP]=1, ..., packet5=1, [SEP]=1
 - 标签: 流量类别ID (如 0=Idle, 1=Backdoor, 等)
 
 数据来源:
@@ -38,7 +38,7 @@ from uer.opts import finetune_opts
 import tqdm
 import numpy as np
 
-FLOW_PACKET_COUNT = 4
+FLOW_PACKET_COUNT = 5
 
 
 def packet_start_positions(packet_count=FLOW_PACKET_COUNT, packet_size=80):
@@ -300,17 +300,17 @@ class PacketAttentionStack(nn.Module):
 class FlowAttention(nn.Module):
     """
     流级注意力机制模块
-    处理流的前4个数据包，使用滑动窗口注意力机制（包括自己和相邻包）
+    处理流的前5个数据包，使用滑动窗口注意力机制（包括自己和相邻包）
 
     工作流程:
     1. 接收包级注意力的输出（每个数据包: header 40 tokens + payload 40 tokens）
     2. 按行池化: 将每个数据包payload的40 tokens按每10 tokens平均池化为4 tokens
-    3. 数据重组: 前面拼接4个数据包的header，后面拼接4个数据包池化后的payload
+    3. 数据重组: 前面拼接5个数据包的header，后面拼接5个数据包池化后的payload
     4. 滑动窗口注意力（包括自己）:
        - 包1: 窗口=[0,1]，attend到包1和包2
        - 包2: 窗口=[0,1,2]，attend到包1、包2和包3
        - 包3: 窗口=[1,2,3]，attend到包2、包3和包4
-       - 包4: 窗口=[2,3]，attend到包3和包4
+       - 包4: 窗口=[2,3,4]，attend到包3、包4和包5
     5. 分别对header和payload应用注意力（h查h, p查p）
     """
     def __init__(self, hidden_size, num_attention_heads=8, header_size=40, payload_size=40, dropout=0.1):
@@ -434,14 +434,14 @@ class FlowAttention(nn.Module):
 
     def forward(self, all_packet_hiddens):
         """
-        对整个流（4个数据包）应用流级注意力
+        对整个流（5个数据包）应用流级注意力
         查询窗口内的所有数据包MFR，包括自己和相邻数据包
 
         窗口配置:
         - 包1: 窗口=[0,1]，attend到包1和包2
         - 包2: 窗口=[0,1,2]，attend到包1、包2和包3
         - 包3: 窗口=[1,2,3]，attend到包2、包3和包4
-        - 包4: 窗口=[2,3]，attend到包3和包4
+        - 包4: 窗口=[2,3,4]，attend到包3、包4和包5
 
         Args:
             all_packet_hiddens: list of 4 tensors, each [batch_size, 80, hidden_size]
@@ -471,35 +471,15 @@ class FlowAttention(nn.Module):
         header_probs = []
         payload_probs = []
 
-        for i in range(4):  # 4个数据包
-            if i == 0:  # 第1个包，窗口=[0,1]，attend到包1和包2
-                header_out, hp = self.apply_attention(
-                    all_headers[0], [all_headers[0], all_headers[1]], is_header=True
-                )
-                payload_out, pp = self.apply_attention(
-                    all_pooled_payloads[0], [all_pooled_payloads[0], all_pooled_payloads[1]], is_header=False
-                )
-            elif i == 1:  # 第2个包，窗口=[0,1,2]，attend到包1、包2和包3
-                header_out, hp = self.apply_attention(
-                    all_headers[1], [all_headers[0], all_headers[1], all_headers[2]], is_header=True
-                )
-                payload_out, pp = self.apply_attention(
-                    all_pooled_payloads[1], [all_pooled_payloads[0], all_pooled_payloads[1], all_pooled_payloads[2]], is_header=False
-                )
-            elif i == 2:  # 第3个包，窗口=[1,2,3]，attend到包2、包3和包4
-                header_out, hp = self.apply_attention(
-                    all_headers[2], [all_headers[1], all_headers[2], all_headers[3]], is_header=True
-                )
-                payload_out, pp = self.apply_attention(
-                    all_pooled_payloads[2], [all_pooled_payloads[1], all_pooled_payloads[2], all_pooled_payloads[3]], is_header=False
-                )
-            else:  # 第4个包，窗口=[2,3]，attend到包3和包4
-                header_out, hp = self.apply_attention(
-                    all_headers[3], [all_headers[2], all_headers[3]], is_header=True
-                )
-                payload_out, pp = self.apply_attention(
-                    all_pooled_payloads[3], [all_pooled_payloads[2], all_pooled_payloads[3]], is_header=False
-                )
+        packet_count = len(all_packet_hiddens)
+        for i in range(packet_count):
+            window_start = max(0, i - 1)
+            window_end = min(packet_count, i + 2)
+            header_window = all_headers[window_start:window_end]
+            payload_window = all_pooled_payloads[window_start:window_end]
+
+            header_out, hp = self.apply_attention(all_headers[i], header_window, is_header=True)
+            payload_out, pp = self.apply_attention(all_pooled_payloads[i], payload_window, is_header=False)
 
             # 残差连接 + Layer Norm (header)
             header_final = self.header_norm(all_headers[i] + header_out)
@@ -578,7 +558,7 @@ class TwoLevelAttentionEncoder(nn.Module):
         batch_size = hidden_states.size(0)
         seq_len = hidden_states.size(1)
 
-        # 提取4个数据包的表示，协议：[CLS] + packet(80) + [SEP] * 4 + padding
+        # 提取5个数据包的表示，协议：[CLS] + packet(80) + [SEP] * 5 + padding
         all_packet_hiddens = []
         packet_starts = packet_start_positions(self.packet_count, self.packet_size)
 
@@ -663,9 +643,9 @@ class TwoLevelAttentionEncoder(nn.Module):
 
 class Classifier(nn.Module):
     """
-    基于4个数据包结构的分类模型（4层包级 + 池化 + 8层流级）
+    基于5个数据包结构的分类模型（4层包级 + 池化 + 8层流级）
     与NSP Indicating预训练模型结构对齐
-    输入: [CLS] + packet1(80) + [SEP] + packet2(80) + [SEP] + packet3(80) + [SEP] + packet4(80)
+    输入: [CLS] + packet1(80) + [SEP] + packet2(80) + [SEP] + packet3(80) + [SEP] + packet4(80) + [SEP] + packet5(80) + [SEP]
 
     架构:
     1. Embedding层
@@ -706,7 +686,7 @@ class Classifier(nn.Module):
 
         Args:
             src: [batch_size x seq_length] - 输入序列
-                 格式: [CLS] + packet1(80) + [SEP] + packet2(80) + [SEP] + packet3(80) + [SEP] + packet4(80)
+                 格式: [CLS] + packet1(80) + [SEP] + packet2(80) + [SEP] + packet3(80) + [SEP] + packet4(80) + [SEP] + packet5(80) + [SEP]
             tgt: [batch_size] - 真实标签（流量类别ID）
             seg: [batch_size x seq_length] - segment标记（所有位置都使用segment 1）
             soft_tgt: [batch_size x labels_num] - 软标签（可选）
@@ -906,19 +886,19 @@ def read_dataset(args, path):
     """
     读取数据集并转换为张量格式
     
-    **支持.pt文件格式**: 从.pt文件中读取流数据，使用完整的4个数据包
-    .pt文件格式: (flow_id, flow_mfr_tokens[320], category_name, dataset_name, label_id)
+    **支持.pt文件格式**: 从.pt文件中读取流数据，使用完整的5个数据包
+    .pt文件格式: (flow_id, flow_mfr_tokens[400], category_name, dataset_name, label_id)
     
     处理流程:
-    1. 读取.pt文件中的流数据（前4个数据包，每个80 tokens，共320 tokens）
-    2. 将320个token拆分成4个数据包（每个80个token）
-    3. 构建输入序列：使用全部4个数据包
-    4. 转换为模型输入格式: [CLS] + packet1 + [SEP] + packet2 + [SEP] + packet3 + [SEP] + packet4
+    1. 读取.pt文件中的流数据（前5个数据包，每个80 tokens，共400 tokens）
+    2. 将400个token拆分成5个数据包（每个80个token）
+    3. 构建输入序列：使用全部5个数据包
+    4. 转换为模型输入格式: [CLS] + packet1 + [SEP] + packet2 + [SEP] + packet3 + [SEP] + packet4 + [SEP] + packet5 + [SEP]
     
     输入结构: 
-    - src: [CLS] + packet1(80) + [SEP] + packet2(80) + [SEP] + packet3(80) + [SEP] + packet4(80)
+    - src: [CLS] + packet1(80) + [SEP] + packet2(80) + [SEP] + packet3(80) + [SEP] + packet4(80) + [SEP] + packet5(80) + [SEP]
     - seg: 所有有效位置均为1，padding为0
-    总长度: 1 + 4 * (80 + 1) = 325，padding到seq_length(>=325)
+    总长度: 1 + 5 * (80 + 1) = 406，padding到seq_length（默认410）
     """
     dataset = []
     
@@ -941,21 +921,24 @@ def read_dataset(args, path):
             
             flow_id, flow_mfr_tokens, category_name, dataset_name, label_id = flow_data
             
-            # 验证数据格式
-            if not isinstance(flow_mfr_tokens, list) or len(flow_mfr_tokens) != 320:
+            expected_len = FLOW_PACKET_COUNT * args.packet_size
+            if not isinstance(flow_mfr_tokens, list):
                 continue
-            
-            # 将320个token拆分成4个数据包（每个80个token）
+
+            if len(flow_mfr_tokens) < expected_len:
+                flow_mfr_tokens = flow_mfr_tokens + [0] * (expected_len - len(flow_mfr_tokens))
+            elif len(flow_mfr_tokens) > expected_len:
+                flow_mfr_tokens = flow_mfr_tokens[:expected_len]
+
             packets = []
-            for packet_idx in range(4):
-                start_idx = packet_idx * 80
-                end_idx = (packet_idx + 1) * 80
+            for packet_idx in range(FLOW_PACKET_COUNT):
+                start_idx = packet_idx * args.packet_size
+                end_idx = start_idx + args.packet_size
                 packet_tokens = flow_mfr_tokens[start_idx:end_idx]
-                if len(packet_tokens) == 80:
+                if len(packet_tokens) == args.packet_size:
                     packets.append(packet_tokens)
-            
-            # 验证是否有4个完整的数据包
-            if len(packets) != 4:
+
+            if len(packets) != FLOW_PACKET_COUNT:
                 continue
             
             # 获取特殊token IDs
@@ -963,7 +946,7 @@ def read_dataset(args, path):
             sep_id = args.tokenizer.vocab.get(SEP_TOKEN, 3)
             unk_id = args.tokenizer.vocab.get('[UNK]', 1)
             
-            # 转换4个数据包的tokens为IDs
+            # 转换5个数据包的tokens为IDs
             all_packet_ids = []
             for packet_tokens in packets:
                 packet_ids = []
@@ -998,26 +981,21 @@ def read_dataset(args, path):
                 if args.soft_targets and "logits" in columns.keys():
                     soft_tgt = [float(value) for value in line[columns["logits"]].split(" ")]
                 
-                # 处理4个数据包格式（TSV格式向后兼容，但主要使用.pt格式）
+                # 处理5个数据包格式（TSV格式向后兼容，但主要使用.pt格式）
                 if "text_b" not in columns:  
                     # 单数据包格式（向后兼容）
                     text_a = line[columns["text_a"]]
                     src = args.tokenizer.convert_tokens_to_ids([CLS_TOKEN] + args.tokenizer.tokenize(text_a))
                     seg = [1] * len(src)
                 else:  
-                    # 假设有text_a, text_b, text_c, text_d四个字段表示4个数据包
-                    # 或者text_a和text_b表示packet pair（旧格式兼容）
-                    text_a = line[columns["text_a"]]      # packet1
-                    text_b = line[columns["text_b"]]      # packet2
-                    
-                    # 检查是否有4个数据包的字段
-                    if "text_c" in columns and "text_d" in columns:
-                        text_c = line[columns["text_c"]]  # packet3
-                        text_d = line[columns["text_d"]]  # packet4
-                        
+                    text_a = line[columns["text_a"]]
+                    text_b = line[columns["text_b"]]
+
+                    packet_fields = [f"text_{suffix}" for suffix in ["a", "b", "c", "d", "e"]]
+                    if all(field in columns for field in packet_fields):
                         packet_ids_list = []
-                        for text in [text_a, text_b, text_c, text_d]:
-                            tokens = args.tokenizer.tokenize(text)
+                        for field in packet_fields:
+                            tokens = args.tokenizer.tokenize(line[columns[field]])
                             token_ids = args.tokenizer.convert_tokens_to_ids(tokens)
                             packet_ids_list.append(token_ids)
                         src, seg = build_flow_sequence(
@@ -1480,9 +1458,9 @@ def main():
     parser.add_argument("--min_delta", type=float, default=0.0,
                         help="Minimum change in the monitored quantity to qualify as an improvement.")
     
-    # **新增**: 4个数据包输入格式
-    parser.add_argument("--four_packet_format", action='store_true', default=True,
-                        help="Use 4-packet format for input ([CLS]+p1+[SEP]+p2+[SEP]+p3+[SEP]+p4, each packet 80 tokens).")
+    # **新增**: 5个数据包输入格式
+    parser.add_argument("--five_packet_format", action='store_true', default=True,
+                        help="Use 5-packet format for input ([CLS]+p1+[SEP]+...+p5+[SEP], each packet 80 tokens).")
     
     # **包级注意力机制参数**
     parser.add_argument("--use_packet_attention", action='store_true', default=True,
@@ -1540,7 +1518,7 @@ def main():
     if args.seq_length < required_seq_length:
         raise ValueError(
             f"seq_length={args.seq_length}会截断显式包边界协议；"
-            f"4包输入至少需要{required_seq_length}=1+4*({args.packet_size}+1)。"
+            f"{FLOW_PACKET_COUNT}包输入至少需要{required_seq_length}=1+{FLOW_PACKET_COUNT}*({args.packet_size}+1)。"
         )
 
     # 构建分类模型
@@ -1571,13 +1549,13 @@ def main():
     args.train_steps = int(instances_num * args.epochs_num / batch_size) + 1
 
     print("=" * 80)
-    print("Finetuning with 4-Packet Format and Two-Level Attention")
+    print("Finetuning with 5-Packet Format and Two-Level Attention")
     print("=" * 80)
     print(f"Input format:")
-    print(f"  src: [CLS] + packet1(80) + [SEP] + packet2(80) + [SEP] + packet3(80) + [SEP] + packet4(80)")
+    print(f"  src: [CLS] + packet1(80) + [SEP] + packet2(80) + [SEP] + packet3(80) + [SEP] + packet4(80) + [SEP] + packet5(80) + [SEP]")
     print(f"  seg: 所有位置都使用 segment 1")
-    print(f"       ([CLS], packet1, [SEP], packet2, [SEP], packet3, [SEP], packet4 全部标记为1)")
-    print(f"Input length: 1 + 4 * (80 + 1) = 325 tokens (padded to {args.seq_length})")
+    print(f"       ([CLS], packet1, [SEP], packet2, [SEP], packet3, [SEP], packet4, [SEP], packet5, [SEP] 全部标记为1)")
+    print(f"Input length: 1 + 5 * (80 + 1) = 406，padding到410 tokens (padded to {args.seq_length})")
     print(f"Sequence length: {args.seq_length}")
     print(f"Batch size: {batch_size}")
     print(f"Training instances: {instances_num}")
@@ -1613,15 +1591,16 @@ def main():
     print("【Level 2: Flow-Level Attention (8 layers)】")
     print(f"  Status: {'✓ Enabled' if args.use_flow_attention else '✗ Disabled'}")
     if args.use_flow_attention:
-        print(f"  Purpose: 对4个数据包之间的跨包依赖关系建模")
+        print(f"  Purpose: 对5个数据包之间的跨包依赖关系建模")
         print(f"  Input: 包级注意力的输出（池化后）")
         print(f"  Mechanisms:")
-        print(f"    (1) 数据重组: 拼接4个数据包的header和池化后的payload")
+        print(f"    (1) 数据重组: 拼接5个数据包的header和池化后的payload")
         print(f"    (2) 滑动窗口注意力（包括自己和相邻包）:")
         print(f"        - 包1: 窗口=[0,1]，attend到包1和包2")
         print(f"        - 包2: 窗口=[0,1,2]，attend到包1、包2和包3")
         print(f"        - 包3: 窗口=[1,2,3]，attend到包2、包3和包4")
-        print(f"        - 包4: 窗口=[2,3]，attend到包3和包4")
+        print(f"        - 包4: 窗口=[2,3,4]，attend到包3、包4和包5")
+        print(f"        - 包5: 窗口=[3,4]，attend到包4和包5")
         print(f"    (3) h查h: Header的tokens作q，窗口内包的header作k&v")
         print(f"    (4) p查p: Payload的tokens作q，窗口内包的payload作k&v")
         print(f"  Layers: 8 layers (stacked flow attention)")
