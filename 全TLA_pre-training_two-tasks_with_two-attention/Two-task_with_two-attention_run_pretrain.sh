@@ -81,7 +81,7 @@ HEADER_SIZE=40                                 # Header token数
 WINDOW_SIZE=20                                 # Payload窗口注意力窗口大小
 
 # GPU配置
-GPU_RANKS="0 1 3"  # 使用GPU 0、1、2（双GPU训练）
+GPU_RANKS="0 1 2"  # 使用GPU 0、1、2
 WORLD_SIZE=3     # 使用3个GPU
 
 # 数据加载优化参数

@@ -38,6 +38,7 @@ import pickle
 import random
 import time
 import math
+import traceback
 from datetime import datetime
 from collections import defaultdict
 
@@ -1788,42 +1789,18 @@ class MultiTaskTrainer:
             batch_count += 1
 
 
-def train_and_validate_multi_task(args):
-    """
-    多任务预训练的训练函数
-    """
-    import time
-    
-    set_seed(args.seed)
-    
-    # 加载词汇表
-    print("=" * 80)
-    print("Loading vocabulary...")
-    if args.spm_model_path:
-        try:
-            import sentencepiece as spm
-        except ImportError:
-            raise ImportError(
-                "You need to install SentencePiece: "
-                "pip install sentencepiece"
-            )
-        sp_model = spm.SentencePieceProcessor()
-        sp_model.Load(args.spm_model_path)
-        args.vocab = {sp_model.IdToPiece(i): i for i
-                      in range(sp_model.GetPieceSize())}
-        args.tokenizer = str2tokenizer[args.tokenizer](args)
-    else:
-        args.tokenizer = str2tokenizer[args.tokenizer](args)
-        args.vocab = args.tokenizer.vocab
-    
-    print(f"Vocabulary size: {len(args.vocab)}")
-    
+
+def build_multi_task_model(args, log_prefix=""):
+    """Build and initialize the multi-task model inside the current process."""
+    def log(message):
+        print(f"{log_prefix}{message}", flush=True)
+
     # 构建base model（新架构：embedding + 4层PacketAttention + 池化 + 8层FlowAttention）
-    print("Building base model (embedding + 4-layer PacketAttention + Pooling + 8-layer FlowAttention)...")
+    log("Building base model (embedding + 4-layer PacketAttention + Pooling + 8-layer FlowAttention)...")
     embedding = str2embedding[args.embedding](args, len(args.vocab))
 
     # 构建新的注意力堆栈
-    print("Building attention stacks...")
+    log("Building attention stacks...")
     packet_size = getattr(args, 'tokens_per_packet', 80)
     header_size = getattr(args, 'header_size', 40)
     payload_size = packet_size - header_size
@@ -1867,20 +1844,20 @@ def train_and_validate_multi_task(args):
     )
 
     # 构建多任务模型
-    print("Building multi-task model...")
+    log("Building multi-task model...")
     model = MultiTaskModel(base_model, args, len(args.vocab))
 
     # 加载或初始化参数
     optimizer_state_dict = None
     scheduler_state_dict = None
     if args.pretrained_model_path is not None:
-        print(f"Loading pretrained model from {args.pretrained_model_path}...")
+        log(f"Loading pretrained model from {args.pretrained_model_path}...")
         # 加载预训练的embedding和encoder参数
         checkpoint = torch.load(args.pretrained_model_path, map_location='cpu')
 
         # 检查是否是完整的checkpoint（包含model, optimizer, scheduler）
         if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
-            print("Loading full checkpoint (model + optimizer + scheduler)...")
+            log("Loading full checkpoint (model + optimizer + scheduler)...")
             pretrained_dict = checkpoint['model_state_dict']
             optimizer_state_dict = checkpoint.get('optimizer_state_dict', None)
             scheduler_state_dict = checkpoint.get('scheduler_state_dict', None)
@@ -1902,13 +1879,53 @@ def train_and_validate_multi_task(args):
 
         model_dict.update(pretrained_dict_filtered)
         model.load_state_dict(model_dict, strict=False)
-        print(f"Loaded {len(pretrained_dict_filtered)} parameters from pretrained model")
+        log(f"Loaded {len(pretrained_dict_filtered)} parameters from pretrained model")
     else:
-        print("Initializing model with normal distribution...")
+        log("Initializing model with normal distribution...")
         for n, p in list(model.named_parameters()):
             if "gamma" not in n and "beta" not in n:
                 p.data.normal_(0, 0.02)
+
+    return model, optimizer_state_dict, scheduler_state_dict
+
+def train_and_validate_multi_task(args):
+    """
+    多任务预训练的训练函数
+    """
+    import time
     
+    set_seed(args.seed)
+    
+    # 加载词汇表
+    print("=" * 80)
+    print("Loading vocabulary...")
+    if args.spm_model_path:
+        try:
+            import sentencepiece as spm
+        except ImportError:
+            raise ImportError(
+                "You need to install SentencePiece: "
+                "pip install sentencepiece"
+            )
+        sp_model = spm.SentencePieceProcessor()
+        sp_model.Load(args.spm_model_path)
+        args.vocab = {sp_model.IdToPiece(i): i for i
+                      in range(sp_model.GetPieceSize())}
+        args.tokenizer = str2tokenizer[args.tokenizer](args)
+    else:
+        args.tokenizer = str2tokenizer[args.tokenizer](args)
+        args.vocab = args.tokenizer.vocab
+    
+    print(f"Vocabulary size: {len(args.vocab)}", flush=True)
+
+    model = None
+    optimizer_state_dict = None
+    scheduler_state_dict = None
+    if args.dist_train:
+        print("Distributed mode: workers will build their own model instances.", flush=True)
+    else:
+        model, optimizer_state_dict, scheduler_state_dict = build_multi_task_model(args)
+
     print("=" * 80)
 
     # 进行分布式训练或单机训练
@@ -1932,6 +1949,15 @@ def train_and_validate_multi_task(args):
 
 
 def worker_multi_task(local_rank, gpu_ranks, args, model, optimizer_state_dict=None, scheduler_state_dict=None):
+    try:
+        return _worker_multi_task_impl(local_rank, gpu_ranks, args, model, optimizer_state_dict, scheduler_state_dict)
+    except BaseException as exc:
+        print(f"[Worker {local_rank}] FATAL: {type(exc).__name__}: {exc}", flush=True)
+        traceback.print_exc()
+        raise
+
+
+def _worker_multi_task_impl(local_rank, gpu_ranks, args, model, optimizer_state_dict=None, scheduler_state_dict=None):
     """
     工作进程函数
     """
@@ -1945,22 +1971,34 @@ def worker_multi_task(local_rank, gpu_ranks, args, model, optimizer_state_dict=N
         gpu_id = gpu_ranks[local_rank]
         rank = local_rank
 
+    print(f"[Rank {rank}] Worker starting: local_rank={local_rank}, gpu_id={gpu_id}", flush=True)
+
     if gpu_id is not None:
         torch.cuda.set_device(gpu_id)
+        print(f"[Rank {rank}] CUDA device set to {gpu_id}", flush=True)
+
+    if model is None:
+        model, optimizer_state_dict, scheduler_state_dict = build_multi_task_model(
+            args, log_prefix=f"[Rank {rank}] "
+        )
 
     if args.dist_train:
+        print(f"[Rank {rank}] Initializing process group: backend={args.backend}, init={args.master_ip}, world_size={args.world_size}", flush=True)
         dist.init_process_group(
             backend=args.backend,
             init_method=args.master_ip,
             world_size=args.world_size,
             rank=rank
         )
+        print(f"[Rank {rank}] Moving model to GPU {gpu_id}", flush=True)
         model.cuda(gpu_id)
         # 使用find_unused_parameters=False，因为我们会确保所有参数在每次迭代中都被使用
         model = DistributedDataParallel(model, device_ids=[gpu_id], find_unused_parameters=False)
+        print(f"[Rank {rank}] DistributedDataParallel initialized", flush=True)
         proc_id = rank
         proc_num = args.world_size
     elif args.single_gpu:
+        print(f"Moving model to GPU {gpu_id}", flush=True)
         model.cuda(gpu_id)
         proc_id = 0
         proc_num = 1
