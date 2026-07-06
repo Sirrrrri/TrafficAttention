@@ -38,7 +38,7 @@ cd "${SCRIPT_DIR}"
 DATASET_PATH="/root/datasets/pt_packet_datasets_随机化/dataset_pretrain_随机化.pt"
 
 # 词表路径
-VOCAB_PATH="/root/datasets_new/pt_packet_datasets_随机化/vocab.txt"
+VOCAB_PATH="/root/datasets/vocab.txt"
 
 # 配置文件路径
 CONFIG_PATH="/root/TrafficAttention/models/bert/base_config.json"

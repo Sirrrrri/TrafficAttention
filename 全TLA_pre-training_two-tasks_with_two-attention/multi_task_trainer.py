@@ -126,26 +126,7 @@ def build_flow_labels(packet_labels, seq_length, packet_count=FLOW_PACKET_COUNT,
     return labels
 
 
-# 导入masking函数
-# 添加路径以导入packet_masking和mfr_masking模块
-burst_predicting_dir = "/root/我的代码和数据集/Mine/pre-training/pre-training_Burst-Predicting_Indicating"
-mfr_masking_dir = "/root/我的代码和数据集/Mine/pre-training/pre-training_MFR-Masking"
-if burst_predicting_dir not in sys.path:
-    sys.path.insert(0, burst_predicting_dir)
-if mfr_masking_dir not in sys.path:
-    sys.path.insert(0, mfr_masking_dir)
-
-try:
-    from packet_masking import mask_flow_packets
-except ImportError:
-    print("Warning: Could not import mask_flow_packets from packet_masking")
-    mask_flow_packets = None
-
-try:
-    from mfr_masking import mask_single_packet_mfr, HEADER_SIZE, PAYLOAD_SIZE
-except ImportError:
-    print("Warning: Could not import mask_single_packet_mfr from mfr_masking")
-    mask_single_packet_mfr = None
+# Masking is implemented by MultiTaskDataset below; no external masking modules are required.
 
 
 class HeaderAttentionLayer(nn.Module):
@@ -1950,16 +1931,24 @@ def train_and_validate_multi_task(args):
         worker_multi_task(None, None, args, model, optimizer_state_dict, scheduler_state_dict)
 
 
-def worker_multi_task(gpu_id, gpu_ranks, args, model, optimizer_state_dict=None, scheduler_state_dict=None):
+def worker_multi_task(local_rank, gpu_ranks, args, model, optimizer_state_dict=None, scheduler_state_dict=None):
     """
     工作进程函数
     """
+    gpu_id = local_rank
+    rank = 0
+    if args.dist_train:
+        if gpu_ranks is None or local_rank >= len(gpu_ranks):
+            raise ValueError(
+                f"Invalid distributed local_rank={local_rank}; gpu_ranks={gpu_ranks}"
+            )
+        gpu_id = gpu_ranks[local_rank]
+        rank = local_rank
+
     if gpu_id is not None:
         torch.cuda.set_device(gpu_id)
 
-    rank = 0
     if args.dist_train:
-        rank = gpu_ranks.index(gpu_id)
         dist.init_process_group(
             backend=args.backend,
             init_method=args.master_ip,

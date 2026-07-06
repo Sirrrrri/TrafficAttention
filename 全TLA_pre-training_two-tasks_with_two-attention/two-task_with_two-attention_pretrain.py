@@ -268,8 +268,15 @@ def main():
     if args.world_size > 1:
         # Multiprocessing distributed mode.
         assert torch.cuda.is_available(), "No available GPUs."
-        assert ranks_num <= args.world_size, "Started processes exceed `world_size` upper limit."
-        assert ranks_num <= torch.cuda.device_count(), "Started processes exceeds the available GPUs."
+        cuda_device_count = torch.cuda.device_count()
+        assert ranks_num == args.world_size, (
+            f"world_size ({args.world_size}) must match the number of gpu_ranks ({ranks_num}) "
+            "for single-node distributed training."
+        )
+        invalid_gpu_ranks = [gpu_id for gpu_id in args.gpu_ranks if gpu_id < 0 or gpu_id >= cuda_device_count]
+        assert not invalid_gpu_ranks, (
+            f"Invalid GPU id(s): {invalid_gpu_ranks}. Available GPU ids are 0..{cuda_device_count - 1}."
+        )
         args.dist_train = True
         args.ranks_num = ranks_num
         print("Using distributed mode for training.")
