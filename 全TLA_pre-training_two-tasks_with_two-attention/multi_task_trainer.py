@@ -862,6 +862,8 @@ class MultiTaskDataset(Dataset):
         self.cls_id = self.vocab.get('[CLS]', 101)
         self.sep_id = self.vocab.get('[SEP]', 102)
         self.pad_id = self.vocab.get('[PAD]', 0)
+        self.unk_id = self.vocab.get('[UNK]', self.pad_id)
+        self.invalid_token_count = 0
         
         # ⚠️ 改用缓冲式加载 - 不再一次性加载全部数据！
         # 使用极小的buffer以快速启动训练: batch_size * 3（最快启动速度）
@@ -881,6 +883,43 @@ class MultiTaskDataset(Dataset):
         
         # 用于控制首次信息输出
         self.first_batch_generated = False
+
+    def _token_to_id(self, token):
+        token_text = str(token).strip().lower()
+        token_id = self.vocab.get(token_text)
+        if token_id is not None:
+            return token_id
+
+        self.invalid_token_count += 1
+        if self.proc_id == 0 and self.invalid_token_count <= 5:
+            print(f"[WARN] token不在词表中，使用[UNK]: {repr(token)}")
+        return self.unk_id
+
+    def _tokens_to_ids(self, tokens):
+        return [self._token_to_id(token) for token in tokens]
+
+    def _normalize_flow_tokens(self, raw_tokens):
+        raw_flow = self._tokens_to_ids(raw_tokens)
+
+        expected_len = self.tokens_per_packet * self.packet_count
+        source_stride = self.tokens_per_packet
+        if len(raw_flow) >= self.packet_count * self.tokens_per_packet * 2:
+            source_stride = self.tokens_per_packet * 2
+
+        flow = []
+        for pkt_idx in range(self.packet_count):
+            start = pkt_idx * source_stride
+            packet_tokens = raw_flow[start:start + self.tokens_per_packet]
+            if len(packet_tokens) < self.tokens_per_packet:
+                packet_tokens = packet_tokens + [self.pad_id] * (self.tokens_per_packet - len(packet_tokens))
+            flow.extend(packet_tokens[:self.tokens_per_packet])
+
+        if len(flow) < expected_len:
+            flow = flow + [self.pad_id] * (expected_len - len(flow))
+        elif len(flow) > expected_len:
+            flow = flow[:expected_len]
+
+        return flow
     
     def _fill_buffer(self):
         """
@@ -976,72 +1015,33 @@ class MultiTaskDataset(Dataset):
         parse_error_count = 0
         for idx, instance in enumerate(instances):
             try:
-                # ⚠️ 关键修复：先检查原始数据包格式（tuple），然后才处理流MFR矩阵格式
-                if isinstance(instance, tuple) and len(instance) == 4:
-                    # 原始数据包格式: (flow_id, packet_idx, packet_tokens, dataset_name)
+                if isinstance(instance, tuple) and len(instance) == 3:
+                    # 当前预训练格式: (flow_id, flow_mfr_tokens, dataset_name)
+                    _, flow_mfr_tokens, _ = instance
+                    flows.append(self._normalize_flow_tokens(flow_mfr_tokens))
+                elif isinstance(instance, tuple) and len(instance) == 4:
+                    # 兼容旧packet级格式: (flow_id, packet_idx, packet_tokens, dataset_name)
                     raw_packets.append(instance)
-                elif isinstance(instance, (list, tuple)):
-                    # 流MFR矩阵格式: 解析为整数列表
-                    # 原始数据: 5个数据包 × 160 tokens = 800 tokens
-                    # 处理后: 5个数据包 × 80 tokens = 400 tokens
-                    
-                    # 首先将原始数据转换为整数（与All版本一致）
-                    raw_flow = []
-                    for token in instance:
-                        if isinstance(token, int):
-                            raw_flow.append(token)
-                        elif isinstance(token, str):
-                            try:
-                                # 尝试十六进制转换
-                                val = int(token, 16)
-                                raw_flow.append(val + 5)  # +5偏移
-                            except (ValueError, TypeError):
-                                try:
-                                    # 尝试十进制转换
-                                    raw_flow.append(int(token))
-                                except (ValueError, TypeError):
-                                    raw_flow.append(self.pad_id)
-                        else:
-                            try:
-                                raw_flow.append(int(token))
-                            except (ValueError, TypeError):
-                                raw_flow.append(self.pad_id)
-                    
-                    expected_len = self.tokens_per_packet * self.packet_count
-                    source_stride = self.tokens_per_packet
-                    if len(raw_flow) >= self.packet_count * self.tokens_per_packet * 2:
-                        source_stride = self.tokens_per_packet * 2
-
-                    flow = []
-                    for pkt_idx in range(self.packet_count):
-                        start = pkt_idx * source_stride
-                        packet_tokens = raw_flow[start:start + self.tokens_per_packet]
-                        if len(packet_tokens) < self.tokens_per_packet:
-                            packet_tokens = packet_tokens + [self.pad_id] * (self.tokens_per_packet - len(packet_tokens))
-                        flow.extend(packet_tokens[:self.tokens_per_packet])
-
-                    if len(flow) < expected_len:
-                        flow = flow + [self.pad_id] * (expected_len - len(flow))
-                    elif len(flow) > expected_len:
-                        flow = flow[:expected_len]
-                    
-                    flows.append(flow)
+                elif isinstance(instance, list):
+                    flows.append(self._normalize_flow_tokens(instance))
+                elif isinstance(instance, tuple):
+                    # 兼容只保存token序列的tuple，但不再做int(hex)+5转换。
+                    flows.append(self._normalize_flow_tokens(instance))
             except Exception as e:
                 parse_error_count += 1
                 if parse_error_count <= 3 and self.proc_id == 0 and not self.first_batch_generated:
                     print(f"[DEBUG] 解析错误 #{parse_error_count}: {type(e).__name__}: {e}")
                     print(f"[DEBUG] 问题instance类型: {type(instance)}, 长度: {len(instance) if hasattr(instance, '__len__') else 'N/A'}")
                 continue
-        
-        # ⚠️ 关键修复：如果有raw_packets，需要重建flows列表
+
+        # 如果有旧packet级样本，需要按flow_id重建flows列表
         if len(raw_packets) > 0:
-            # 按flow_id分组
             flow_dict = {}
             for flow_id, packet_idx, packet_tokens, dataset_name in raw_packets:
                 if flow_id not in flow_dict:
                     flow_dict[flow_id] = []
                 flow_dict[flow_id].append((packet_idx, packet_tokens))
-            
+
             for flow_id, packets in flow_dict.items():
                 packets.sort(key=lambda x: x[0])
                 packets = packets[:self.packet_count]
@@ -1051,29 +1051,19 @@ class MultiTaskDataset(Dataset):
 
                 flow_tokens = []
                 for _, packet_tokens in packets:
-                    packet_int_tokens = []
-                    for token_str in packet_tokens[:self.tokens_per_packet]:
-                        try:
-                            val = int(token_str, 16)
-                            packet_int_tokens.append(val + 5)
-                        except (ValueError, TypeError):
-                            try:
-                                packet_int_tokens.append(int(token_str))
-                            except (ValueError, TypeError):
-                                packet_int_tokens.append(self.pad_id)
-
-                    while len(packet_int_tokens) < self.tokens_per_packet:
-                        packet_int_tokens.append(self.pad_id)
-                    flow_tokens.extend(packet_int_tokens[:self.tokens_per_packet])
+                    packet_ids = self._tokens_to_ids(packet_tokens[:self.tokens_per_packet])
+                    if len(packet_ids) < self.tokens_per_packet:
+                        packet_ids = packet_ids + [self.pad_id] * (self.tokens_per_packet - len(packet_ids))
+                    flow_tokens.extend(packet_ids[:self.tokens_per_packet])
 
                 expected_len = self.tokens_per_packet * self.packet_count
-                while len(flow_tokens) < expected_len:
-                    flow_tokens.append(self.pad_id)
-                if len(flow_tokens) > expected_len:
+                if len(flow_tokens) < expected_len:
+                    flow_tokens = flow_tokens + [self.pad_id] * (expected_len - len(flow_tokens))
+                elif len(flow_tokens) > expected_len:
                     flow_tokens = flow_tokens[:expected_len]
 
                 flows.append(flow_tokens)
-        
+
         # 组织完成，打印统计
         elapsed = time.time() - start_time
         if self.proc_id == 0 and not self.first_batch_generated:

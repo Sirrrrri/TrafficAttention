@@ -19,6 +19,8 @@
 
 # Logs
 *.log
+*.log
+*.pid
 
 # Python
 __pycache__/
