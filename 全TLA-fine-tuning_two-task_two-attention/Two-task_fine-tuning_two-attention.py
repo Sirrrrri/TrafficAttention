@@ -180,7 +180,7 @@ class PayloadAttentionLayer(nn.Module):
     第3层：p-p关系 - payload内部窗口注意力
     对payload进行窗口自注意力，header保持不变
     """
-    def __init__(self, hidden_size, num_attention_heads=8, header_size=40, window_size=20, dropout=0.1):
+    def __init__(self, hidden_size, num_attention_heads=8, header_size=40, packet_size=80, window_size=20, dropout=0.1):
         super(PayloadAttentionLayer, self).__init__()
         self.hidden_size = hidden_size
         self.num_attention_heads = num_attention_heads
@@ -194,6 +194,15 @@ class PayloadAttentionLayer(nn.Module):
         self.output = nn.Linear(hidden_size, hidden_size)
         self.dropout = nn.Dropout(dropout)
         self.norm = nn.LayerNorm(hidden_size)
+
+        payload_size = packet_size - header_size
+        half_window = window_size // 2
+        window_mask = torch.full((payload_size, payload_size), float('-inf'))
+        for i in range(payload_size):
+            start = max(0, i - half_window)
+            end = min(payload_size, i + half_window + 1)
+            window_mask[i, start:end] = 0.0
+        self.register_buffer("window_mask", window_mask)
 
     def transpose_for_scores(self, x):
         new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.attention_head_size)
@@ -214,14 +223,7 @@ class PayloadAttentionLayer(nn.Module):
         attention_scores = torch.matmul(query, key.transpose(-1, -2))
         attention_scores = attention_scores / math.sqrt(self.attention_head_size)
 
-        window_mask = torch.ones((seq_len, seq_len), device=payload_hidden.device) * float('-inf')
-        half_window = self.window_size // 2
-
-        for i in range(seq_len):
-            start = max(0, i - half_window)
-            end = min(seq_len, i + half_window + 1)
-            window_mask[i, start:end] = 0.0
-
+        window_mask = self.window_mask[:seq_len, :seq_len].to(dtype=attention_scores.dtype)
         attention_scores = attention_scores + window_mask.unsqueeze(0).unsqueeze(0)
 
         attention_probs = F.softmax(attention_scores, dim=-1)
@@ -272,6 +274,7 @@ class PacketAttentionStack(nn.Module):
                     hidden_size=hidden_size,
                     num_attention_heads=num_attention_heads,
                     header_size=header_size,
+                    packet_size=packet_size,
                     window_size=window_size,
                     dropout=dropout
                 )
@@ -311,6 +314,7 @@ class FlowAttention(nn.Module):
        - 包2: 窗口=[0,1,2]，attend到包1、包2和包3
        - 包3: 窗口=[1,2,3]，attend到包2、包3和包4
        - 包4: 窗口=[2,3,4]，attend到包3、包4和包5
+       - 包5: 窗口=[3,4]，attend到包4和包5
     5. 分别对header和payload应用注意力（h查h, p查p）
     """
     def __init__(self, hidden_size, num_attention_heads=8, header_size=40, payload_size=40, dropout=0.1):
@@ -321,6 +325,7 @@ class FlowAttention(nn.Module):
         self.header_size = header_size
         self.payload_size = payload_size
         self.pooled_payload_size = 4  # 40 tokens -> 4 tokens (每10个tokens池化为1个)
+        self.packet_count = FLOW_PACKET_COUNT
         
         # Header注意力
         self.header_query = nn.Linear(hidden_size, hidden_size)
@@ -340,6 +345,13 @@ class FlowAttention(nn.Module):
         # Layer Norm
         self.header_norm = nn.LayerNorm(hidden_size)
         self.payload_norm = nn.LayerNorm(hidden_size)
+
+        flow_window_mask = torch.full((self.packet_count, self.packet_count), float('-inf'))
+        for packet_idx in range(self.packet_count):
+            window_start = max(0, packet_idx - 1)
+            window_end = min(self.packet_count, packet_idx + 2)
+            flow_window_mask[packet_idx, window_start:window_end] = 0.0
+        self.register_buffer("flow_window_mask", flow_window_mask)
         
     def transpose_for_scores(self, x):
         """将tensor转换为多头注意力的形状"""
@@ -360,19 +372,14 @@ class FlowAttention(nn.Module):
         unpooled = pooled_payload.unsqueeze(2).repeat(1, 1, 10, 1)  # [batch_size, 4, 10, hidden_size]
         unpooled = unpooled.view(batch_size, 40, hidden_size)  # [batch_size, 40, hidden_size]
         return unpooled
-    
-    def apply_attention(self, query_hidden, key_value_hiddens, is_header=True):
-        """
-        应用注意力机制
-        Args:
-            query_hidden: [batch_size, seq_len_q, hidden_size] - 查询的hidden states
-            key_value_hiddens: list of tensors - 用作key和value的hidden states列表
-            is_header: bool - 是否为header注意力
-        Returns:
-            output: [batch_size, seq_len_q, hidden_size]
-            probs: [batch_size, num_heads, seq_len_q, total_seq_len_kv]
-        """
-        # 选择对应的query/key/value投影层
+
+    def transpose_flow_for_scores(self, x):
+        # [batch, packet, seq_len, hidden] -> [batch, heads, packet, seq_len, head_dim]
+        new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.attention_head_size)
+        x = x.reshape(*new_x_shape)
+        return x.permute(0, 3, 1, 2, 4)
+
+    def apply_window_attention(self, hidden, is_header=True, return_probs=False):
         if is_header:
             query_layer = self.header_query
             key_layer = self.header_key
@@ -384,96 +391,79 @@ class FlowAttention(nn.Module):
             value_layer = self.payload_value
             output_layer = self.payload_output
 
-        # 计算Query
-        query = self.transpose_for_scores(query_layer(query_hidden))
-        # [batch_size, num_heads, seq_len_q, head_size]
+        batch_size, packet_count, seq_len, _ = hidden.size()
+        query = self.transpose_flow_for_scores(query_layer(hidden))
+        key = self.transpose_flow_for_scores(key_layer(hidden))
+        value = self.transpose_flow_for_scores(value_layer(hidden))
 
-        # 计算Key和Value（拼接所有key_value_hiddens）
-        all_keys = []
-        all_values = []
-        for kv_hidden in key_value_hiddens:
-            key = self.transpose_for_scores(key_layer(kv_hidden))
-            value = self.transpose_for_scores(value_layer(kv_hidden))
-            all_keys.append(key)
-            all_values.append(value)
+        key = key.reshape(batch_size, self.num_attention_heads, packet_count * seq_len, self.attention_head_size)
+        value = value.reshape(batch_size, self.num_attention_heads, packet_count * seq_len, self.attention_head_size)
 
-        # 拼接所有keys和values
-        keys = torch.cat(all_keys, dim=2)  # [batch_size, num_heads, total_seq_len_kv, head_size]
-        values = torch.cat(all_values, dim=2)  # [batch_size, num_heads, total_seq_len_kv, head_size]
-
-        # 计算注意力分数
-        attention_scores = torch.matmul(query, keys.transpose(-1, -2))
+        attention_scores = torch.matmul(query, key.transpose(-1, -2).unsqueeze(2))
         attention_scores = attention_scores / math.sqrt(self.attention_head_size)
+
+        packet_mask = self.flow_window_mask[:packet_count, :packet_count].to(
+            dtype=attention_scores.dtype,
+            device=attention_scores.device
+        )
+        token_mask = packet_mask.repeat_interleave(seq_len, dim=-1)
+        attention_scores = attention_scores + token_mask.view(1, 1, packet_count, 1, packet_count * seq_len)
+
         attention_probs = F.softmax(attention_scores, dim=-1)
         attention_probs = self.dropout(attention_probs)
 
-        # 应用注意力
-        context = torch.matmul(attention_probs, values)
-        context = context.permute(0, 2, 1, 3).contiguous()
-        new_context_shape = context.size()[:-2] + (self.hidden_size,)
-        context = context.view(*new_context_shape)
+        context = torch.matmul(attention_probs, value.unsqueeze(2))
+        context = context.permute(0, 2, 3, 1, 4).contiguous()
+        context = context.view(batch_size, packet_count, seq_len, self.hidden_size)
 
-        # 输出投影
         output = output_layer(context)
         output = self.dropout(output)
 
-        return output, attention_probs
+        if return_probs:
+            return output, self.split_window_probs(attention_probs, packet_count, seq_len)
+        return output
+
+    def split_window_probs(self, attention_probs, packet_count, seq_len):
+        # Keep the historical visualization format: one tensor per query packet,
+        # with key tokens only from that packet's visible flow window.
+        probs = []
+        for packet_idx in range(packet_count):
+            window_start = max(0, packet_idx - 1)
+            window_end = min(packet_count, packet_idx + 2)
+            start_token = window_start * seq_len
+            end_token = window_end * seq_len
+            probs.append(attention_probs[:, :, packet_idx, :, start_token:end_token])
+        return probs
 
     def forward(self, all_packet_hiddens):
         """
         对整个流（5个数据包）应用流级注意力
         查询窗口内的所有数据包MFR，包括自己和相邻数据包
 
-        窗口配置:
-        - 包1: 窗口=[0,1]，attend到包1和包2
-        - 包2: 窗口=[0,1,2]，attend到包1、包2和包3
-        - 包3: 窗口=[1,2,3]，attend到包2、包3和包4
-        - 包4: 窗口=[2,3,4]，attend到包3、包4和包5
-
         Args:
-            all_packet_hiddens: list of 4 tensors, each [batch_size, 80, hidden_size]
-                               每个tensor包含一个数据包的hidden states
+            all_packet_hiddens: list of 5 tensors, each [batch_size, 44, hidden_size]
+                               每个tensor包含一个数据包的header和池化后payload hidden states
         Returns:
-            output_headers: list of 4 tensors, each [batch_size, 40, hidden_size]
+            output_headers: list of 5 tensors, each [batch_size, 40, hidden_size]
             output_payloads: list of 5 tensors, each [batch_size, 4, hidden_size]
             probs: dictionary of attention probabilities
         """
-        # 分离所有数据包的header和已池化payload。
-        all_headers = []
-        all_pooled_payloads = []
-
-        for packet_hidden in all_packet_hiddens:
-            header = packet_hidden[:, :self.header_size, :]  # [batch_size, 40, hidden_size]
-            pooled_payload = packet_hidden[:, self.header_size:, :]  # [batch_size, 4, hidden_size]
-
-            all_headers.append(header)
-            all_pooled_payloads.append(pooled_payload)
-
-        # 应用滑动窗口注意力（包括自己和相邻包）
-        output_headers = []
-        output_payloads = []
-        header_probs = []
-        payload_probs = []
-
         packet_count = len(all_packet_hiddens)
-        for i in range(packet_count):
-            window_start = max(0, i - 1)
-            window_end = min(packet_count, i + 2)
-            header_window = all_headers[window_start:window_end]
-            payload_window = all_pooled_payloads[window_start:window_end]
+        if packet_count != self.packet_count:
+            raise ValueError(f"FlowAttention expects {self.packet_count} packets, got {packet_count}.")
 
-            header_out, hp = self.apply_attention(all_headers[i], header_window, is_header=True)
-            payload_out, pp = self.apply_attention(all_pooled_payloads[i], payload_window, is_header=False)
+        packets = torch.stack(all_packet_hiddens, dim=1)
+        headers = packets[:, :, :self.header_size, :]
+        pooled_payloads = packets[:, :, self.header_size:, :]
 
-            # 残差连接 + Layer Norm (header)
-            header_final = self.header_norm(all_headers[i] + header_out)
+        header_out, header_probs = self.apply_window_attention(headers, is_header=True, return_probs=True)
+        payload_out, payload_probs = self.apply_window_attention(pooled_payloads, is_header=False, return_probs=True)
 
-            payload_final = self.payload_norm(all_pooled_payloads[i] + payload_out)
+        header_final = self.header_norm(headers + header_out)
+        payload_final = self.payload_norm(pooled_payloads + payload_out)
 
-            output_headers.append(header_final)
-            output_payloads.append(payload_final)
-            header_probs.append(hp)
-            payload_probs.append(pp)
+        output_headers = [header_final[:, i] for i in range(packet_count)]
+        output_payloads = [payload_final[:, i] for i in range(packet_count)]
 
         probs = {
             "header": header_probs,
