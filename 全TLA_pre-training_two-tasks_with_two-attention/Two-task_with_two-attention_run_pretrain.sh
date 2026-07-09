@@ -46,6 +46,13 @@ CONFIG_PATH="/root/TrafficAttention/models/bert/base_config.json"
 # 输出模型路径
 OUTPUT_MODEL_PATH="/root/models/全TLA_pre-trained_model_two_tasks_with_two-attention/全TLA_pre-trained_model_two_tasks_with_two_attention.bin"
 
+# 恢复训练配置
+# 指定checkpoint路径即可从该checkpoint继续训练，例如：
+# RESUME_CHECKPOINT_PATH="/root/models/.../全TLA_pre-trained_model_two_tasks_with_two_attention.bin-5000"
+# 留空时，如果AUTO_RESUME=1，则自动使用输出目录下最新checkpoint；AUTO_RESUME=0则从头开始。
+RESUME_CHECKPOINT_PATH="${RESUME_CHECKPOINT_PATH:-}"
+AUTO_RESUME="${AUTO_RESUME:-1}"
+
 # 训练参数
 TOTAL_STEPS=500000
 SAVE_CHECKPOINT_STEPS=5000
@@ -96,6 +103,13 @@ echo "数据集: ${DATASET_PATH}"
 echo "词表: ${VOCAB_PATH}"
 echo "配置文件: ${CONFIG_PATH}"
 echo "输出模型: ${OUTPUT_MODEL_PATH}"
+if [ -n "${RESUME_CHECKPOINT_PATH}" ]; then
+    echo "恢复checkpoint: ${RESUME_CHECKPOINT_PATH}"
+elif [ "${AUTO_RESUME}" = "1" ]; then
+    echo "恢复checkpoint: 自动使用最新checkpoint（如存在）"
+else
+    echo "恢复checkpoint: 不恢复，从头开始"
+fi
 echo ""
 echo "训练参数:"
 echo "  - Total steps: ${TOTAL_STEPS}"
@@ -184,43 +198,42 @@ LOG_FILE="${SCRIPT_DIR}/Two-task_with_two-attention_run_pretrain.log"
 echo "日志文件: ${LOG_FILE}"
 echo ""
 
-# 检查是否存在最新的模型检查点
+# 检查/设置恢复训练参数
 echo "检查模型检查点..."
 LATEST_CHECKPOINT=""
-if [ -d "${OUTPUT_DIR}" ]; then
-    # 查找最新的检查点文件（按修改时间排序）
-    # 支持两种格式：*.bin 和 *.bin-* (检查点格式)
-    LATEST_CHECKPOINT=$(ls -t "${OUTPUT_DIR}"/*.bin* 2>/dev/null | grep -E '\.(bin|bin-[0-9]+)$' | head -1)
+CHECKPOINT_STEP=""
+REMAINING_STEPS=""
+RESUME_MODE="from_scratch"
+RESUME_ARG=()
+
+if [ -n "${RESUME_CHECKPOINT_PATH}" ]; then
+    if [ ! -f "${RESUME_CHECKPOINT_PATH}" ]; then
+        echo "❌ 错误: 指定checkpoint不存在: ${RESUME_CHECKPOINT_PATH}"
+        exit 1
+    fi
+    RESUME_MODE="specified"
+    LATEST_CHECKPOINT="${RESUME_CHECKPOINT_PATH}"
+    RESUME_ARG=(--resume_checkpoint_path "${RESUME_CHECKPOINT_PATH}")
+elif [ "${AUTO_RESUME}" = "1" ]; then
+    RESUME_MODE="auto"
+    RESUME_ARG=(--auto_resume)
+    if [ -d "${OUTPUT_DIR}" ]; then
+        LATEST_CHECKPOINT=$(ls -t "${OUTPUT_DIR}"/*.bin-* 2>/dev/null | head -1)
+    fi
 fi
 
 if [ -n "${LATEST_CHECKPOINT}" ]; then
-    echo "✓ 发现最新的模型检查点: ${LATEST_CHECKPOINT}"
-    echo ""
-    echo "是否从最新的模型检查点继续训练？"
-    echo "  1) 是，从最新检查点继续训练（推荐）"
-    echo "  2) 否，从头开始训练"
-    echo ""
-    read -p "请选择 [1/2] (默认: 1): " RESUME_CHOICE
-    RESUME_CHOICE=${RESUME_CHOICE:-1}
-
-    if [ "${RESUME_CHOICE}" = "1" ]; then
-        echo "✓ 将从最新检查点继续训练"
-        PRETRAINED_MODEL_ARG="--pretrained_model_path ${LATEST_CHECKPOINT}"
-        echo "  检查点: ${LATEST_CHECKPOINT}"
-        # 从文件名提取步数（支持 *.bin-5000 格式）
-        CHECKPOINT_STEP=$(basename "${LATEST_CHECKPOINT}" | sed 's/.*-\([0-9]*\)$/\1/')
-        if [ -n "${CHECKPOINT_STEP}" ] && [ "${CHECKPOINT_STEP}" -gt 0 ] 2>/dev/null; then
-            echo "  恢复步数: ${CHECKPOINT_STEP}"
-            REMAINING_STEPS=$((TOTAL_STEPS - CHECKPOINT_STEP))
-            echo "  剩余步数: ${REMAINING_STEPS}"
-        fi
-    else
-        echo "✓ 将从头开始训练"
-        PRETRAINED_MODEL_ARG=""
+    CHECKPOINT_STEP=$(basename "${LATEST_CHECKPOINT}" | sed 's/.*-\([0-9]*\)$/\1/')
+    echo "✓ 将从checkpoint继续训练: ${LATEST_CHECKPOINT}"
+    if [ -n "${CHECKPOINT_STEP}" ] && [ "${CHECKPOINT_STEP}" -gt 0 ] 2>/dev/null; then
+        REMAINING_STEPS=$((TOTAL_STEPS - CHECKPOINT_STEP))
+        echo "  恢复步数: ${CHECKPOINT_STEP}"
+        echo "  剩余步数: ${REMAINING_STEPS}"
     fi
-else
+elif [ "${RESUME_MODE}" = "auto" ]; then
     echo "✗ 未发现模型检查点，将从头开始训练"
-    PRETRAINED_MODEL_ARG=""
+else
+    echo "✓ 未启用恢复训练，将从头开始训练"
 fi
 
 echo ""
@@ -232,7 +245,7 @@ nohup python -u "two-task_with_two-attention_pretrain.py" \
     --vocab_path ${VOCAB_PATH} \
     --config_path ${CONFIG_PATH} \
     --output_model_path ${OUTPUT_MODEL_PATH} \
-    ${PRETRAINED_MODEL_ARG} \
+    "${RESUME_ARG[@]}" \
     --world_size ${WORLD_SIZE} \
     --gpu_ranks ${GPU_RANKS} \
     --total_steps ${TOTAL_STEPS} \
@@ -276,11 +289,12 @@ echo "进程ID (PID): ${PID}"
 echo "PID文件: ${PID_FILE}"
 echo "日志文件: ${LOG_FILE}"
 echo "模型保存路径: ${OUTPUT_MODEL_PATH}"
-if [ -n "${LATEST_CHECKPOINT}" ] && [ "${RESUME_CHOICE}" = "1" ]; then
+if [ -n "${LATEST_CHECKPOINT}" ]; then
     echo ""
     echo "训练模式: 从检查点恢复"
+    echo "  - 模式: ${RESUME_MODE}"
     echo "  - 检查点: ${LATEST_CHECKPOINT}"
-    if [ -n "${CHECKPOINT_STEP}" ] && [ "${CHECKPOINT_STEP}" -gt 0 ]; then
+    if [ -n "${CHECKPOINT_STEP}" ] && [ "${CHECKPOINT_STEP}" -gt 0 ] 2>/dev/null; then
         echo "  - 恢复步数: ${CHECKPOINT_STEP}"
         echo "  - 剩余步数: ${REMAINING_STEPS}"
     fi

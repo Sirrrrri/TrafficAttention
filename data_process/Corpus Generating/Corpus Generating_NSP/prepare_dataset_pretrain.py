@@ -21,6 +21,7 @@ import glob
 import pickle
 import re
 import argparse
+import random
 from multiprocessing import Pool
 
 FLOW_ROWS = 8
@@ -323,7 +324,8 @@ def collect_all_flow_files(mfr_root, dataset_names=None):
 
 
 def process_files_to_dataset_pretrain(file_list, output_file, max_samples=None, 
-                                      processes_num=6, log_interval=1000, save_interval=100000):
+                                      processes_num=6, log_interval=1000, save_interval=100000,
+                                      shuffle_seed=7):
     """
     将flow txt文件列表处理成dataset_pretrain.pt格式文件
     
@@ -333,7 +335,8 @@ def process_files_to_dataset_pretrain(file_list, output_file, max_samples=None,
         max_samples: 最大样本数（None表示处理所有样本）
         processes_num: 进程数（默认6）
         log_interval: 日志更新间隔（默认1000个文件）
-        save_interval: 数据保存间隔（默认100000个文件）
+        save_interval: 数据保存间隔（默认100000个样本）
+        shuffle_seed: 全局随机打乱的随机种子
     """
     processed_flow_count = 0
     processed_sample_count = 0
@@ -353,11 +356,8 @@ def process_files_to_dataset_pretrain(file_list, output_file, max_samples=None,
     print(f"Using {processes_num} processes for parallel processing...")
     print(f"Output file: {output_file}")
     
-    # 创建dataset文件（以追加模式打开，支持分批写入）
-    dataset_writer = open(output_file, 'wb')
-    
-    # flow级样本缓冲区
-    flow_buffer = []
+    # 全局随机打乱要求先收集全部有效flow样本，再统一shuffle写盘。
+    flow_samples = []
     
     # 使用进程池处理所有文件
     with Pool(processes=processes_num) as pool:
@@ -369,7 +369,7 @@ def process_files_to_dataset_pretrain(file_list, output_file, max_samples=None,
             # 处理结果
             if flow_sample is not None:
                 # 每个flow生成1个flow级样本
-                flow_buffer.append(flow_sample)
+                flow_samples.append(flow_sample)
                 processed_flow_count += 1
                 processed_sample_count += 1
             else:
@@ -381,25 +381,21 @@ def process_files_to_dataset_pretrain(file_list, output_file, max_samples=None,
                       f"Processed flows={processed_flow_count}, Samples={processed_sample_count}, "
                       f"Skipped={skipped_count}")
             
-            # 每处理save_interval个文件，将缓冲区的数据追加写入.pt文件
-            if file_count % save_interval == 0 and len(flow_buffer) > 0:
-                print(f"[Save] Writing {len(flow_buffer)} flow samples to disk...")
-                for flow_sample in flow_buffer:
-                    pickle.dump(flow_sample, dataset_writer)
-                dataset_writer.flush()
-                print(f"[Save] Successfully saved | Total processed: {file_count} flows")
-                flow_buffer.clear()
-    
-    # 处理完所有文件后，写入剩余缓冲区中的数据
-    if len(flow_buffer) > 0:
-        print(f"\n[Final Save] Writing remaining {len(flow_buffer)} flow samples to disk...")
-        for flow_sample in flow_buffer:
+    print(f"\n[Shuffle] Collected {len(flow_samples)} valid flow samples.")
+    print(f"[Shuffle] Global random shuffle with seed={shuffle_seed}...")
+    rng = random.Random(shuffle_seed)
+    rng.shuffle(flow_samples)
+    print("[Shuffle] Completed.")
+
+    print(f"\n[Final Save] Writing shuffled samples to disk...")
+    with open(output_file, 'wb') as dataset_writer:
+        for sample_idx, flow_sample in enumerate(flow_samples, 1):
             pickle.dump(flow_sample, dataset_writer)
+            if save_interval > 0 and sample_idx % save_interval == 0:
+                dataset_writer.flush()
+                print(f"[Save] Written {sample_idx}/{len(flow_samples)} shuffled flow samples")
         dataset_writer.flush()
-        flow_buffer.clear()
-        print(f"[Final Save] Completed")
-    
-    dataset_writer.close()
+    print(f"[Final Save] Completed")
     
     print(f"\n{'='*80}")
     print(f"[Final Summary]")
@@ -493,7 +489,9 @@ def main():
     parser.add_argument('--log_interval', type=int, default=1000,
                         help='Number of files to process before logging progress (default: 1000)')
     parser.add_argument('--save_interval', type=int, default=100000,
-                        help='Number of files to process before saving to disk (default: 100000)')
+                        help='Number of samples to write before flushing progress (default: 100000)')
+    parser.add_argument('--shuffle_seed', type=int, default=7,
+                        help='Random seed used for global shuffle before writing .pt (default: 7)')
     parser.add_argument('--verify', action='store_true',
                         help='Verify the generated dataset after creation')
     
@@ -536,7 +534,8 @@ def main():
         args.max_samples, 
         args.processes_num, 
         args.log_interval, 
-        args.save_interval
+        args.save_interval,
+        args.shuffle_seed
     )
     
     # 验证数据集（可选）

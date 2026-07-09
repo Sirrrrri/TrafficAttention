@@ -1633,34 +1633,70 @@ class MultiTaskTrainer:
 
         return total_loss / self.accumulation_steps
     
-    def report_and_reset_stats(self):
-        """报告和重置统计信息"""
-        elapsed = time.time() - self.start_time
-        
-        print(f"| Step: {self.current_step:6d}/{self.total_steps} | Time: {elapsed:6.2f}s |")
-        
-        # 按任务顺序输出统计信息
+    def _get_global_task_stats(self, device):
+        """汇总所有GPU上的统计量，用于日志显示全局平均值。"""
         task_order = ['nsp_indicating', 'mfr_masking']
+        local_values = []
         for task_name in task_order:
             stats = self.task_stats[task_name]
-            
-            # MLM任务: loss按样本统计，accuracy按token统计
-            if stats['num_samples'] > 0:
-                avg_loss = stats['loss'] / stats['num_samples']
-                if stats['num_tokens'] > 0:
-                    accuracy = stats['correct'] / stats['num_tokens'] * 100  # 百分比
+            local_values.extend([
+                stats['loss'],
+                stats['correct'],
+                stats['num_samples'],
+                stats['num_tokens'],
+            ])
+
+        stats_tensor = torch.tensor(local_values, dtype=torch.float64, device=device)
+        if self.dist_train:
+            dist.all_reduce(stats_tensor, op=dist.ReduceOp.SUM)
+
+        global_stats = {}
+        offset = 0
+        for task_name in task_order:
+            global_stats[task_name] = {
+                'loss': stats_tensor[offset].item(),
+                'correct': stats_tensor[offset + 1].item(),
+                'num_samples': stats_tensor[offset + 2].item(),
+                'num_tokens': stats_tensor[offset + 3].item(),
+            }
+            offset += 4
+
+        return global_stats
+
+    def report_and_reset_stats(self, rank=None, device=None):
+        """报告和重置统计信息。多GPU训练时显示所有GPU聚合后的平均值。"""
+        elapsed = time.time() - self.start_time
+        if device is None:
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+        global_stats = self._get_global_task_stats(device)
+
+        if not self.dist_train or rank == 0:
+            mode = f"global_avg({self.world_size} GPUs)" if self.dist_train else "single"
+            print(f"| Step: {self.current_step:6d}/{self.total_steps} | Time: {elapsed:6.2f}s | Stats: {mode} |")
+
+            # 按任务顺序输出统计信息
+            task_order = ['nsp_indicating', 'mfr_masking']
+            for task_name in task_order:
+                stats = global_stats[task_name]
+
+                # MLM任务: loss按样本统计，accuracy按token统计
+                if stats['num_samples'] > 0:
+                    avg_loss = stats['loss'] / stats['num_samples']
+                    if stats['num_tokens'] > 0:
+                        accuracy = stats['correct'] / stats['num_tokens'] * 100  # 百分比
+                    else:
+                        accuracy = 0.0  # 没有需要预测的token，Acc为0
+                    print(f"| {task_name:15s} | AvgLoss: {avg_loss:6.4f} | AvgAcc: {accuracy:6.2f}% | GlobalSamples: {int(stats['num_samples']):6d} |")
                 else:
-                    accuracy = 0.0  # 没有需要预测的token，Acc为0
-                print(f"| {task_name:15s} | Loss: {avg_loss:6.4f} | Acc: {accuracy:6.2f}% | Samples: {int(stats['num_samples']):4d} |")
-            else:
-                print(f"| {task_name:15s} | No samples |")
-        
-        print("-" * 80)
-        
+                    print(f"| {task_name:15s} | No samples |")
+
+            print("-" * 80)
+
         # 重置统计信息
         for task_name in self.task_stats:
             self.task_stats[task_name] = {'loss': 0.0, 'correct': 0.0, 'num_samples': 0.0, 'num_tokens': 0.0}
-        
+
         self.start_time = time.time()
     
     def train(self, args, gpu_id, rank, loader, model, optimizer, scheduler):
@@ -1707,9 +1743,9 @@ class MultiTaskTrainer:
                 torch.cuda.empty_cache()
 
             # 报告统计信息
-            if self.current_step % self.report_steps == 0 and \
-                    (not self.dist_train or (self.dist_train and rank == 0)):
-                self.report_and_reset_stats()
+            if self.current_step % self.report_steps == 0:
+                report_device = torch.device(f'cuda:{gpu_id}' if gpu_id is not None else 'cpu')
+                self.report_and_reset_stats(rank=rank, device=report_device)
             
             # 保存检查点
             if self.current_step % self.save_checkpoint_steps == 0 and \

@@ -95,6 +95,24 @@ def find_latest_checkpoint(model_dir, base_model_path):
     return None
 
 
+def extract_checkpoint_step(checkpoint_path):
+    """从checkpoint内容或文件名中提取训练步数。"""
+    if not checkpoint_path:
+        return 0
+
+    try:
+        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        if isinstance(checkpoint, dict) and 'step' in checkpoint:
+            return int(checkpoint['step'])
+    except Exception:
+        pass
+
+    try:
+        return int(str(checkpoint_path).split('-')[-1])
+    except (ValueError, IndexError):
+        return 0
+
+
 def main():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
@@ -111,7 +129,11 @@ def main():
     parser.add_argument("--tgt_spm_model_path", default=None, type=str,
                         help="Path of the target sentence piece model.")
     parser.add_argument("--pretrained_model_path", type=str, default=None,
-                        help="Path of the pretrained model.")
+                        help="Path of the pretrained model weights used for initialization.")
+    parser.add_argument("--resume_checkpoint_path", type=str, default=None,
+                        help="Path of a full training checkpoint to resume from. This has priority over --pretrained_model_path.")
+    parser.add_argument("--auto_resume", action="store_true",
+                        help="Automatically resume from the latest checkpoint under output_model_path directory when no explicit checkpoint is given.")
     parser.add_argument("--output_model_path", type=str, required=True,
                         help="Path of the output model.")
     parser.add_argument("--config_path", type=str, default="models/bert/base_config.json",
@@ -305,22 +327,34 @@ def main():
     else:
         print(f"模型保存目录已存在: {model_save_dir}")
 
-    # 自动查找最新的模型检查点
-    latest_checkpoint = find_latest_checkpoint(model_save_dir, args.output_model_path)
-    if latest_checkpoint:
-        print(f"发现最新的模型检查点: {latest_checkpoint}")
-        args.pretrained_model_path = latest_checkpoint
-        # 从检查点名称提取步数
-        try:
-            checkpoint_step = int(latest_checkpoint.split('-')[-1])
-            args.checkpoint_step = checkpoint_step
-            print(f"将从第 {checkpoint_step} 步继续训练")
-        except (ValueError, IndexError):
-            args.checkpoint_step = 0
-            print("无法从检查点名称提取步数，将从头开始训练")
+    # checkpoint恢复策略：显式指定优先；未指定时只有开启--auto_resume才自动找最新。
+    args.checkpoint_step = 0
+    if args.resume_checkpoint_path:
+        if not os.path.isfile(args.resume_checkpoint_path):
+            raise FileNotFoundError(f"指定的checkpoint不存在: {args.resume_checkpoint_path}")
+        args.pretrained_model_path = args.resume_checkpoint_path
+        args.checkpoint_step = extract_checkpoint_step(args.resume_checkpoint_path)
+        print(f"将从指定checkpoint继续训练: {args.resume_checkpoint_path}")
+        if args.checkpoint_step > 0:
+            print(f"恢复步数: {args.checkpoint_step}")
+        else:
+            print("未能从checkpoint提取步数，将从step 0计数")
+    elif args.auto_resume:
+        latest_checkpoint = find_latest_checkpoint(model_save_dir, args.output_model_path)
+        if latest_checkpoint:
+            print(f"发现最新的模型检查点: {latest_checkpoint}")
+            args.pretrained_model_path = latest_checkpoint
+            args.checkpoint_step = extract_checkpoint_step(latest_checkpoint)
+            if args.checkpoint_step > 0:
+                print(f"将从第 {args.checkpoint_step} 步继续训练")
+            else:
+                print("无法从检查点提取步数，将从step 0计数")
+        else:
+            print("未发现模型检查点，将从头开始训练")
+    elif args.pretrained_model_path:
+        print(f"将加载预训练权重初始化模型: {args.pretrained_model_path}")
     else:
-        args.checkpoint_step = 0
-        print("未发现模型检查点，将从头开始训练")
+        print("未指定checkpoint，将从头开始训练")
     
     # 使用多任务预训练trainer（优化版：分批次加载）
     print("=" * 80)
