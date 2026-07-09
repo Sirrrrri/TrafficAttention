@@ -1617,9 +1617,9 @@ def split_dataset(dataset_root, output_root, target_apps, num_workers=None):
 
 if __name__ == '__main__':
     # 配置
-    DATASET_ROOT = "/root/datasets_new/original_pcap_datasets/NUDT_MobileTraffic Dataset"
-    OUTPUT_ROOT = "/root/datasets_new/单流Pcap数据集_微调_随机化/NUDT_MobileTraffic Dataset_all"
-    CSV_FILE = "/root/Mine_随机化/data_process/Traffic Splitting​/for_fine-tuning/NUDT_dataset_statistics.csv"
+    DATASET_ROOT = "/root/datasets/original_datasets/original_finetuning_datasets/NUDT_MobileTraffic Dataset/"
+    OUTPUT_ROOT = "/root/datasets/单流Pcap数据集_微调_随机化/NUDT_MobileTraffic Dataset_all"
+    CSV_FILE = "/root/TrafficAttention/data_process/Traffic Splitting​/for_fine-tuning/NUDT_dataset_statistics.csv"
     MIN_FLOWS = 2500  # 最小流数阈值（只处理流数 >= 2500 的应用）
     NUM_WORKERS = 6  # 并行进程数（可根据CPU核心数调整）
     # 注意：每个应用最多保存1000条流（在 process_txt_pcap_pair 函数中设置 MAX_FLOWS_PER_APP = 1000）
@@ -1662,7 +1662,7 @@ if __name__ == '__main__':
     if not os.path.exists(CSV_FILE):
         print(f"\n❌ CSV文件不存在: {CSV_FILE}")
         # 尝试查找CSV文件
-        csv_file_alt = "/root/Mine_随机化/data_process/Traffic Splitting​/for_fine-tuning/Traffic Splitting​/NUDT_dataset_statistics.csv"
+        csv_file_alt = "/root/TrafficAttention/data_process/Traffic Splitting​/for_fine-tuning/NUDT_dataset_statistics.csv"
         if os.path.exists(csv_file_alt):
             CSV_FILE = csv_file_alt
             print(f"✓ 找到CSV文件: {CSV_FILE}")

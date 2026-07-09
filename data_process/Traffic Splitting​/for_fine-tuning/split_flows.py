@@ -633,11 +633,11 @@ if __name__ == '__main__':
         print("从config.py加载配置")
     except ImportError:
         print("config.py未找到，使用默认配置")
-        DATASETS_ROOT = "/root/datasets_new/original_pcap_datasets/"
+        DATASETS_ROOT = "/root/datasets/original_datasets/original_finetuning_datasets/"
         DATASETS = ["CICIoT2023", "ISCXVPN2016", "USTC-TFC2016", "ISCXVPN2016-APP"]
 
     # 输出目录（拆分后的单流pcap文件）
-    OUTPUT_ROOT = "/root/datasets_new/单流Pcap数据集_微调_随机化"
+    OUTPUT_ROOT = "/root/datasets/单流Pcap数据集_微调_随机化"
 
     # 流拆分参数
     NUM_WORKERS = 6        # 并行进程数（手动设置为6个进程）
