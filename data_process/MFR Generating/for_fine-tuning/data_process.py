@@ -864,7 +864,7 @@ if __name__ == '__main__':
     
     # 数据集根目录（使用单流Pcap数据集目录 - 包含所有分流后的pcap文件）
     # 注意：单流Pcap数据集有 2,179,948 个pcap文件，处理时间会很长
-    DATASETS_ROOT = "/root/datasets_new/单流Pcap数据集_微调_随机化/"
+    DATASETS_ROOT = "/root/datasets/单流Pcap数据集_微调_随机化/"
     
     # 要处理的数据集列表
     DATASETS = [
@@ -877,10 +877,10 @@ if __name__ == '__main__':
     
     
     # 输出目录
-    OUTPUT_DIR = "/root/datasets_new/MFR数据集_微调_随机化/"
+    OUTPUT_DIR = "/root/datasets/MFR数据集_微调_随机化/"
     
     # 词汇表路径
-    VOCAB_PATH = "/root/Mine_随机化/models/mfr_vocab.txt"
+    VOCAB_PATH = "/root/TrafficAttention/models/mfr_vocab.txt"
     
     # 检查是否有数据集需要处理
     if not DATASETS or len(DATASETS) == 0:

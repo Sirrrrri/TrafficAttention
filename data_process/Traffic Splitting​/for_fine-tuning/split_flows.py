@@ -634,7 +634,13 @@ if __name__ == '__main__':
     except ImportError:
         print("config.py未找到，使用默认配置")
         DATASETS_ROOT = "/root/datasets/original_datasets/original_finetuning_datasets/"
-        DATASETS = ["CICIoT2023", "ISCXVPN2016", "USTC-TFC2016", "ISCXVPN2016-APP"]
+        DATASETS_ROOT = "/root/datasets/original_datasets/original_finetuning_datasets/"
+        DATASETS = {
+            # "CICIoT2023", 
+            # "ISCXVPN2016", 
+            # "USTC-TFC2016", 
+            # "ISCXVPN2016-APP"
+        }
 
     # 输出目录（拆分后的单流pcap文件）
     OUTPUT_ROOT = "/root/datasets/单流Pcap数据集_微调_随机化"

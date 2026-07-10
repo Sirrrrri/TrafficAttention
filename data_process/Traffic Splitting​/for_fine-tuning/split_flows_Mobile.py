@@ -1342,8 +1342,8 @@ def split_dataset(dataset_root, output_root, target_apps, num_workers=None):
     """
     # 🚀 修改：处理除 data8 以外的所有目录
     main_dirs = [
-        'NetlogTraffic_0626',
-        # 'NetlogTraffic_0628',
+        # 'NetlogTraffic_0626',
+        'NetlogTraffic_0628',
         # 'newUser',
         # 'newUser_0602',
         # 'traffic'
