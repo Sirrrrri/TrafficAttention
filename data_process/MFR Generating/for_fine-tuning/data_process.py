@@ -8,7 +8,7 @@ import random
 import numpy as np
 import dpkt
 from tqdm import tqdm
-from collections import defaultdict
+from collections import Counter, defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from multiprocessing import Manager
 
@@ -30,6 +30,7 @@ def get_ip_offset(datalink):
         101 (DLT_RAW)       - 裸IP包，IP头偏移0字节
         12  (DLT_RAW 旧版)  - 裸IP包，IP头偏移0字节
         113 (DLT_LINUX_SLL) - Linux Cooked Capture，IP头偏移16字节
+        228 (DLT_IPV4)      - 裸IPv4包，IP头偏移0字节
         276 (DLT_LINUX_SLL2)- Linux Cooked Capture v2，IP头偏移20字节
 
     返回:
@@ -40,6 +41,7 @@ def get_ip_offset(datalink):
         101: 0,
         12: 0,
         113: 16,
+        228: 0,
         276: 20,
     }
     return offset_map.get(datalink, None)
@@ -62,6 +64,63 @@ def open_pcap_reader(file_handle):
         pass
 
     return None, None
+
+
+def extract_ipv4_bytes_from_ethernet(packet_data):
+    """从以太网帧中定位IPv4层，支持普通Ethernet和VLAN/QinQ封装。"""
+    if len(packet_data) < 14:
+        return None
+
+    offset = 14
+    eth_type = int.from_bytes(packet_data[12:14], byteorder='big')
+    vlan_types = {0x8100, 0x88a8, 0x9100, 0x9200, 0x9300}
+
+    while eth_type in vlan_types:
+        if len(packet_data) < offset + 4:
+            return None
+        eth_type = int.from_bytes(packet_data[offset + 2:offset + 4], byteorder='big')
+        offset += 4
+
+    if eth_type != 0x0800 or len(packet_data) < offset + 20:
+        return None
+
+    return packet_data[offset:]
+
+
+def extract_ipv4_bytes_from_sll(packet_data, datalink):
+    """从Linux cooked capture帧中定位IPv4层，并验证协议字段。"""
+    if datalink == 113:
+        if len(packet_data) < 16:
+            return None
+        protocol = int.from_bytes(packet_data[14:16], byteorder='big')
+        if protocol != 0x0800:
+            return None
+        return packet_data[16:]
+
+    if datalink == 276:
+        if len(packet_data) < 20:
+            return None
+        protocol = int.from_bytes(packet_data[0:2], byteorder='big')
+        if protocol != 0x0800:
+            return None
+        return packet_data[20:]
+
+    return None
+
+
+def extract_ipv4_bytes(packet_data, datalink):
+    """根据链路层类型返回IPv4层原始字节；无法定位时返回None。"""
+    if datalink == 1:
+        return extract_ipv4_bytes_from_ethernet(packet_data)
+
+    if datalink in (113, 276):
+        return extract_ipv4_bytes_from_sll(packet_data, datalink)
+
+    ip_offset = get_ip_offset(datalink)
+    if ip_offset is None or len(packet_data) < ip_offset + 20:
+        return None
+
+    return packet_data[ip_offset:]
 
 
 def normalize_mfr_fields(header_bytes, payload_bytes):
@@ -127,24 +186,29 @@ def extract_packet_mfr_from_ip_bytes(ip_bytes):
 
 def extract_packet_mfr(packet_data, datalink):
     """根据datalink类型从原始packet_data中定位IPv4头并提取MFR数据。"""
-    ip_offset = get_ip_offset(datalink)
-    if ip_offset is None or len(packet_data) < ip_offset + 20:
+    ip_bytes = extract_ipv4_bytes(packet_data, datalink)
+    if ip_bytes is None:
         return None
-    return extract_packet_mfr_from_ip_bytes(packet_data[ip_offset:])
+    return extract_packet_mfr_from_ip_bytes(ip_bytes)
 
 
-def read_pcap_mfr_data(pcap_path, max_packets=None, max_valid=None):
-    """读取pcap/pcapng，按datalink偏移提取MFR数据列表；读失败或未知链路类型返回None。"""
+def read_pcap_mfr_data(pcap_path, max_packets=None, max_valid=None, return_reason=False):
+    """读取pcap/pcapng，按链路层定位IPv4并提取MFR数据。"""
     try:
         with open(pcap_path, 'rb') as f:
             pcap_reader, datalink = open_pcap_reader(f)
-            if pcap_reader is None or get_ip_offset(datalink) is None:
-                return None
+            if pcap_reader is None:
+                return (None, 'pcap_reader_failed') if return_reason else None
+            if get_ip_offset(datalink) is None:
+                reason = f'unsupported_datalink_{datalink}'
+                return (None, reason) if return_reason else None
 
             data = []
+            seen_packets = 0
             for packet_idx, (_, packet_data) in enumerate(pcap_reader):
                 if max_packets is not None and packet_idx >= max_packets:
                     break
+                seen_packets += 1
 
                 mfr_data = extract_packet_mfr(packet_data, datalink)
                 if mfr_data is None:
@@ -154,8 +218,17 @@ def read_pcap_mfr_data(pcap_path, max_packets=None, max_valid=None):
                 if max_valid is not None and len(data) >= max_valid:
                     break
 
+            if return_reason:
+                if data:
+                    return data, None
+                if seen_packets == 0:
+                    return None, 'empty_pcap'
+                return None, f'no_ipv4_mfr_packets_datalink_{datalink}'
+
             return data
-    except Exception:
+    except Exception as e:
+        if return_reason:
+            return None, f'read_exception_{type(e).__name__}'
         return None
 
 
@@ -444,20 +517,20 @@ def process_single_pcap(pcap_file, dataset_name, class_name):
         flow_matrix 或 None
     """
     try:
-        mfr_packets = read_pcap_mfr_data(pcap_file, max_packets=1000)
+        mfr_packets, reason = read_pcap_mfr_data(pcap_file, max_packets=1000, return_reason=True)
         if not mfr_packets:
-            return None
+            return None, reason
 
-        return make_flow_matrix(mfr_packets[:5])
+        return make_flow_matrix(mfr_packets[:5]), None
 
     except MemoryError:
         print(f"  内存不足，跳过文件: {os.path.basename(pcap_file)}")
-        return None
+        return None, 'memory_error'
     except KeyboardInterrupt:
         raise
     except Exception as e:
         print(f"  处理文件出错 {os.path.basename(pcap_file)}: {str(e)[:100]}")
-        return None
+        return None, f'exception_{type(e).__name__}'
 
 
 def process_class_mfr_matrices(class_dir, output_dir, dataset_name, class_name, train_ratio=0.7, test_ratio=0.2, valid_ratio=0.1, num_workers=6, batch_size=10000, log_interval=100):
@@ -530,6 +603,7 @@ def process_class_mfr_matrices(class_dir, output_dir, dataset_name, class_name, 
         processed_count = 0
         flow_success_count = 0
         flow_fail_count = 0
+        fail_reasons = Counter()
 
         print(f"    🚀 [{split_name}] 开始处理 {len(files)} 个文件...")
 
@@ -541,7 +615,7 @@ def process_class_mfr_matrices(class_dir, output_dir, dataset_name, class_name, 
             for future in as_completed(futures, timeout=None):
                 pcap_file = futures[future]
                 try:
-                    flow_matrix = future.result(timeout=60)
+                    flow_matrix, fail_reason = future.result(timeout=60)
 
                     if flow_matrix is not None:
                         sample_counts[split_name]['flow'] += 1
@@ -549,6 +623,7 @@ def process_class_mfr_matrices(class_dir, output_dir, dataset_name, class_name, 
                         flow_success_count += 1
                     else:
                         flow_fail_count += 1
+                        fail_reasons[fail_reason or 'unknown'] += 1
 
                     processed_count += 1
 
@@ -559,15 +634,20 @@ def process_class_mfr_matrices(class_dir, output_dir, dataset_name, class_name, 
                 except TimeoutError:
                     print(f"  ⚠️  处理超时 {os.path.basename(pcap_file)}")
                     flow_fail_count += 1
+                    fail_reasons['timeout'] += 1
                 except Exception as e:
                     print(f"  ⚠️  处理出错 {os.path.basename(pcap_file)}: {str(e)[:50]}")
                     flow_fail_count += 1
+                    fail_reasons[f'future_exception_{type(e).__name__}'] += 1
 
         # 打印最终处理统计
         total_files = len(files)
         success_rate = (flow_success_count / total_files * 100) if total_files > 0 else 0
         print(f"    ✅ [{split_name}] 全部完成! 处理 {processed_count}/{total_files} 个文件, 流样本: {sample_counts[split_name]['flow']}")
         print(f"    📊 {split_name} 流生成统计: 成功 {flow_success_count}/{total_files} ({success_rate:.1f}%), 失败 {flow_fail_count}")
+        if fail_reasons:
+            reason_text = ', '.join(f"{reason}: {count}" for reason, count in fail_reasons.most_common(5))
+            print(f"    🔎 {split_name} 失败原因Top: {reason_text}")
 
     # 处理训练集（使用{num_workers}个进程）
     print(f"  处理训练集（{num_workers}进程，每{log_interval}个文件输出日志）...")
