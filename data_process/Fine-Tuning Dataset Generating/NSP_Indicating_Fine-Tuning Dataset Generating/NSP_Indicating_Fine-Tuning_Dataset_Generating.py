@@ -30,13 +30,13 @@ from tqdm import tqdm
 # 配置参数
 class Config:
     # 源数据路径
-    SOURCE_BASE_DIR = "/root/datasets_new/MFR数据集_微调_随机化/"
+    SOURCE_BASE_DIR = "/root/datasets/MFR数据集_微调_随机化/"
     # 目标数据路径
-    TARGET_BASE_DIR = "/root/datasets_new/fine-tuning数据集_随机化_50pct数据/"
+    TARGET_BASE_DIR = "/root/datasets/fine-tuning数据集_随机化/"
+    # TARGET_BASE_DIR = "/root/datasets/fine-tuning数据集_随机化_50pct数据/"
     
     # 四个数据集配置
     # 1.正常微调
-    '''
     DATASETS = {
         "NUDT_MobileTraffic Dataset_all_MFR": {
             "source": "NUDT_MobileTraffic Dataset_all_MFR",
@@ -64,7 +64,6 @@ class Config:
             "total_flows": 11592 #实际只有11592条
         }
     }
-    '''
     '''
     # 2.10%微调数据
     DATASETS = {
@@ -699,7 +698,7 @@ def main():
     """主函数 - NSP变形任务微调数据集生成"""
     parser = argparse.ArgumentParser(description='生成NSP变形任务微调数据集')
     parser.add_argument('--output_dir', type=str, 
-                        default='/root/datasets_new/fine-tuning数据集_随机化_50pct数据/',
+                        default='/root/datasets/fine-tuning数据集_随机化/',
                         help='输出目录（用于保存.pt文件）')
     parser.add_argument('--verify', action='store_true',
                         help='生成数据集后验证它的内容')

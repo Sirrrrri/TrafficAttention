@@ -21,18 +21,18 @@
 # ============================================================================
 
 # 脚本目录
-SCRIPT_DIR="/root/全TLA_Mine/全TLA-fine-tuning_two-task_two-attention/"
+SCRIPT_DIR="/root/TrafficAttention/全TLA-fine-tuning_two-task_two-attention/"
 cd ${SCRIPT_DIR}
 
 # 预训练模型路径
 # TLA在第一层+使用随机化之后的预训练数据
-PRETRAINED_MODEL="/root/models/全TLA_pre-trained_model_two_tasks_with_two-attention/全TLA_pre-trained_model_two_tasks_with_two_attention.bin-125000"
+PRETRAINED_MODEL="/root/models/全TLA_pre-trained_model_two_tasks_with_two-attention/全TLA_pre-trained_model_two_tasks_with_two_attention.bin-85000"
 
 # 配置文件路径
-CONFIG_PATH="/root/全TLA_Mine/models/bert/base_config.json"
+CONFIG_PATH="/root/TrafficAttention/models/bert/base_config.json"
 
 # 词表路径
-VOCAB_PATH="/root/datasets_new/pt_packet_datasets_随机化/vocab.txt"
+VOCAB_PATH="/root/datasets/vocab.txt"
 
 # 训练参数
 EPOCHS_NUM=50
@@ -43,11 +43,11 @@ SEQ_LENGTH=410  # 5个数据包显式分隔: [CLS] + p1(80) + [SEP] + ... + p5(8
 # 数据集配置（.pt格式数据集基础路径，不含_train.pt等后缀）
 # 脚本会自动查找 _train.pt, _dev.pt, _test.pt 三个文件
 declare -A DATASETS
-DATASETS["NUDT_MobileTraffic Dataset_all_MFR"]="/root/datasets_new/fine-tuning数据集/finetuning_NUDT_MobileTraffic Dataset_all_MFR"
-DATASETS["USTC-TFC2016_MFR"]="/root/datasets_new/fine-tuning数据集/finetuning_USTC-TFC2016_MFR"
-DATASETS["ISCXVPN2016_MFR"]="/root/datasets_new/fine-tuning数据集/finetuning_ISCXVPN2016_MFR"
-DATASETS["CICIoT2023_MFR"]="/root/datasets_new/fine-tuning数据集/finetuning_CICIoT2023_MFR"
-DATASETS["ISCXVPN2016-APP_MFR"]="/root/datasets_new/fine-tuning数据集/finetuning_ISCXVPN2016-APP_MFR"
+DATASETS["NUDT_MobileTraffic Dataset_all_MFR"]="/root/datasets/fine-tuning数据集_随机化/finetuning_NUDT_MobileTraffic Dataset_all_MFR"
+DATASETS["USTC-TFC2016_MFR"]="/root/datasets/fine-tuning数据集_随机化/finetuning_USTC-TFC2016_MFR"
+DATASETS["ISCXVPN2016_MFR"]="/root/datasets/fine-tuning数据集_随机化/finetuning_ISCXVPN2016_MFR"
+DATASETS["CICIoT2023_MFR"]="/root/datasets/fine-tuning数据集_随机化/finetuning_CICIoT2023_MFR"
+DATASETS["ISCXVPN2016-APP_MFR"]="/root/datasets/fine-tuning数据集_随机化/finetuning_ISCXVPN2016-APP_MFR"
 
 # 输出模型基础目录
 OUTPUT_BASE_DIR="/root/models/全TLA_fine-tuning_two-task_two-attention"
@@ -388,24 +388,24 @@ cat > ${BACKGROUND_SCRIPT} << 'EOFSCRIPT'
 #!/bin/bash
 
 # 导入变量
-SCRIPT_DIR="/root/全TLA_Mine/全TLA-fine-tuning_two-task_two-attention/"
+SCRIPT_DIR="/root/TrafficAttention/全TLA-fine-tuning_two-task_two-attention/"
 cd ${SCRIPT_DIR}
 
 # 数据集配置（基础路径，不含_train.pt等后缀）
 declare -A DATASETS
-DATASETS["NUDT_MobileTraffic Dataset_all_MFR"]="/root/datasets_new/fine-tuning数据集/finetuning_NUDT_MobileTraffic Dataset_all_MFR"
-DATASETS["USTC-TFC2016_MFR"]="/root/datasets_new/fine-tuning数据集/finetuning_USTC-TFC2016_MFR"
-DATASETS["ISCXVPN2016_MFR"]="/root/datasets_new/fine-tuning数据集/finetuning_ISCXVPN2016_MFR"
-DATASETS["CICIoT2023_MFR"]="/root/datasets_new/fine-tuning数据集/finetuning_CICIoT2023_MFR"
-DATASETS["ISCXVPN2016-APP_MFR"]="/root/datasets_new/fine-tuning数据集/finetuning_ISCXVPN2016-APP_MFR"
+DATASETS["NUDT_MobileTraffic Dataset_all_MFR"]="/root/datasets/fine-tuning数据集_随机化/finetuning_NUDT_MobileTraffic Dataset_all_MFR"
+DATASETS["USTC-TFC2016_MFR"]="/root/datasets/fine-tuning数据集_随机化/finetuning_USTC-TFC2016_MFR"
+DATASETS["ISCXVPN2016_MFR"]="/root/datasets/fine-tuning数据集_随机化/finetuning_ISCXVPN2016_MFR"
+DATASETS["CICIoT2023_MFR"]="/root/datasets/fine-tuning数据集_随机化/finetuning_CICIoT2023_MFR"
+DATASETS["ISCXVPN2016-APP_MFR"]="/root/datasets/fine-tuning数据集_随机化/finetuning_ISCXVPN2016-APP_MFR"
 
 
 OUTPUT_BASE_DIR="/root/models/全TLA_fine-tuning_two-task_two-attention"
 LOG_DIR="${SCRIPT_DIR}/logs"
 MAIN_LOG="${SCRIPT_DIR}/Two-task_fine-tuning_two-attention.log"
-PRETRAINED_MODEL="/root/models/全TLA_pre-trained_model_two_tasks_with_two-attention/全TLA_pre-trained_model_two_tasks_with_two_attention.bin-125000"
-VOCAB_PATH="/root/datasets_new/pt_packet_datasets_随机化/vocab.txt"
-CONFIG_PATH="/root/全TLA_Mine/models/bert/base_config.json"
+PRETRAINED_MODEL="/root/models/全TLA_pre-trained_model_two_tasks_with_two-attention/全TLA_pre-trained_model_two_tasks_with_two_attention.bin-85000"
+VOCAB_PATH="/root/datasets/vocab.txt"
+CONFIG_PATH="/root/TrafficAttention/models/bert/base_config.json"
 EPOCHS_NUM=50
 BATCH_SIZE=32
 LEARNING_RATE=2e-5
