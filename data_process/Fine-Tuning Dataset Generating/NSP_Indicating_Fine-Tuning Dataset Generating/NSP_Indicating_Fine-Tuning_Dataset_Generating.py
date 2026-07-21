@@ -94,6 +94,7 @@ class Config:
         }
     }
     '''
+    '''
     # 3.50%微调数据
     DATASETS = {
         "NUDT_MobileTraffic Dataset_all_MFR": {
@@ -122,6 +123,7 @@ class Config:
             "total_flows": 5796 #实际只有11592条
         }
     }
+    '''
 
     # 随机种子
     RANDOM_SEED = 42
